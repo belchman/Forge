@@ -58,6 +58,8 @@ enum Commands {
         /// Task description to route
         task: String,
     },
+    /// Output status line for Claude Code terminal display
+    Statusline,
     /// tmux monitor management
     Tmux {
         #[command(subcommand)]
@@ -137,6 +139,11 @@ enum SessionAction {
     },
     /// Show session metrics
     Metrics,
+    /// List agent sessions for current or specified session
+    Agents {
+        #[arg(long)]
+        session_id: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -289,10 +296,14 @@ fn main() {
             MemoryAction::List { namespace } => commands::memory::list(&namespace),
             MemoryAction::Search { query, limit } => commands::memory::search(&query, limit),
         },
+        Commands::Statusline => commands::statusline::run(),
         Commands::Session { action } => match action {
             SessionAction::Current => commands::session::current(),
             SessionAction::List { limit } => commands::session::list(limit),
             SessionAction::Metrics => commands::session::metrics(),
+            SessionAction::Agents { session_id } => {
+                commands::session::agents(session_id.as_deref())
+            }
         },
         Commands::Learn { action } => match action {
             LearnAction::Store { content, category } => commands::learn::store(&content, &category),

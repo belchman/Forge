@@ -154,6 +154,36 @@ fn test_work_create_requires_title() {
         .stderr(predicate::str::contains("--title"));
 }
 
+// ── Session agents ──
+
+#[test]
+fn test_session_agents() {
+    // Without an active session, should output "No active session" or "not initialized"
+    flowforge().args(["session", "agents"]).assert().success();
+}
+
+// ── Statusline ──
+
+#[test]
+fn test_statusline_empty_stdin() {
+    flowforge()
+        .arg("statusline")
+        .write_stdin("{}")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("FF"));
+}
+
+#[test]
+fn test_statusline_with_model() {
+    flowforge()
+        .arg("statusline")
+        .write_stdin(r#"{"model":"opus-4"}"#)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("FF"));
+}
+
 // ── MCP server ──
 
 #[test]

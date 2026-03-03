@@ -1,5 +1,5 @@
 use flowforge_core::hook::{self, SubagentStopInput};
-use flowforge_core::{FlowForgeConfig, Result, TeamMemberStatus};
+use flowforge_core::{AgentSessionStatus, FlowForgeConfig, Result, TeamMemberStatus};
 use flowforge_memory::MemoryDb;
 use flowforge_tmux::TmuxStateManager;
 
@@ -11,6 +11,16 @@ pub fn run() -> Result<()> {
     let state_mgr = TmuxStateManager::new(FlowForgeConfig::tmux_state_path());
     let _ = state_mgr.update_member_status(&input.agent_id, TeamMemberStatus::Completed, None);
     let _ = state_mgr.add_event(format!("{} stopped", input.agent_id));
+
+    // End agent session in DB
+    {
+        let db_path = config.db_path();
+        if db_path.exists() {
+            if let Ok(db) = MemoryDb::open(&db_path) {
+                let _ = db.end_agent_session(&input.agent_id, AgentSessionStatus::Completed);
+            }
+        }
+    }
 
     // Log work event for agent stop (C4)
     if config.work_tracking.log_all {

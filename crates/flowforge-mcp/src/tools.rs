@@ -59,6 +59,7 @@ impl ToolRegistry {
             "session_status" => self.session_status(params),
             "session_metrics" => self.session_metrics(params),
             "session_history" => self.session_history(params),
+            "session_agents" => self.session_agents(params),
             "team_status" => self.team_status(params),
             "team_log" => self.team_log(params),
             "work_create" => self.work_create(params),
@@ -274,6 +275,17 @@ impl ToolRegistry {
                 "type": "object",
                 "properties": {
                     "limit": { "type": "integer", "description": "Max sessions to return", "default": 10 }
+                }
+            }),
+        });
+
+        self.register(ToolDef {
+            name: "session_agents".into(),
+            description: "List agent sessions for a given session or the current session".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "session_id": { "type": "string", "description": "Parent session ID (defaults to current)" }
                 }
             }),
         });
@@ -694,17 +706,33 @@ impl ToolRegistry {
     fn session_status(&self, _params: &Value) -> Value {
         match Self::open_db() {
             Ok(db) => match db.get_current_session() {
-                Ok(Some(session)) => json!({
-                    "status": "ok",
-                    "session": {
-                        "id": session.id,
-                        "started_at": session.started_at.to_rfc3339(),
-                        "cwd": session.cwd,
-                        "edits": session.edits,
-                        "commands": session.commands,
-                        "summary": session.summary,
-                    },
-                }),
+                Ok(Some(session)) => {
+                    let agents: Vec<Value> = db
+                        .get_agent_sessions(&session.id)
+                        .unwrap_or_default()
+                        .iter()
+                        .filter(|a| a.ended_at.is_none())
+                        .map(|a| {
+                            json!({
+                                "agent_id": a.agent_id,
+                                "agent_type": a.agent_type,
+                                "status": a.status.to_string(),
+                            })
+                        })
+                        .collect();
+                    json!({
+                        "status": "ok",
+                        "session": {
+                            "id": session.id,
+                            "started_at": session.started_at.to_rfc3339(),
+                            "cwd": session.cwd,
+                            "edits": session.edits,
+                            "commands": session.commands,
+                            "summary": session.summary,
+                        },
+                        "agents": agents,
+                    })
+                }
                 Ok(None) => json!({"status": "ok", "session": null}),
                 Err(e) => json!({"status": "error", "message": format!("{e}")}),
             },
@@ -774,6 +802,53 @@ impl ToolRegistry {
         }
     }
 
+    fn session_agents(&self, params: &Value) -> Value {
+        let session_id = params.get("session_id").and_then(|v| v.as_str());
+
+        match Self::open_db() {
+            Ok(db) => {
+                let parent_id = if let Some(id) = session_id {
+                    id.to_string()
+                } else {
+                    match db.get_current_session() {
+                        Ok(Some(s)) => s.id,
+                        Ok(None) => return json!({"status": "ok", "agents": [], "count": 0}),
+                        Err(e) => return json!({"status": "error", "message": format!("{e}")}),
+                    }
+                };
+
+                match db.get_agent_sessions(&parent_id) {
+                    Ok(agents) => {
+                        let entries: Vec<Value> = agents
+                            .iter()
+                            .map(|a| {
+                                let duration_seconds =
+                                    a.ended_at.map(|end| (end - a.started_at).num_seconds());
+                                json!({
+                                    "id": a.id,
+                                    "agent_id": a.agent_id,
+                                    "agent_type": a.agent_type,
+                                    "status": a.status.to_string(),
+                                    "started_at": a.started_at.to_rfc3339(),
+                                    "ended_at": a.ended_at.map(|t| t.to_rfc3339()),
+                                    "edits": a.edits,
+                                    "commands": a.commands,
+                                    "task_id": a.task_id,
+                                    "duration_seconds": duration_seconds,
+                                })
+                            })
+                            .collect();
+                        json!({"status": "ok", "agents": entries, "count": entries.len()})
+                    }
+                    Err(e) => json!({"status": "error", "message": format!("{e}")}),
+                }
+            }
+            Err(e) => {
+                json!({"status": "error", "message": format!("Failed to open database: {e}")})
+            }
+        }
+    }
+
     // --- Team tool implementations ---
 
     fn team_status(&self, _params: &Value) -> Value {
@@ -793,10 +868,33 @@ impl ToolRegistry {
                         })
                     })
                     .collect();
+
+                // Enrich with DB-backed agent sessions
+                let agent_sessions: Vec<Value> = if let Ok(db) = Self::open_db() {
+                    db.get_active_agent_sessions()
+                        .unwrap_or_default()
+                        .iter()
+                        .map(|a| {
+                            json!({
+                                "id": a.id,
+                                "agent_id": a.agent_id,
+                                "agent_type": a.agent_type,
+                                "status": a.status.to_string(),
+                                "started_at": a.started_at.to_rfc3339(),
+                                "edits": a.edits,
+                                "commands": a.commands,
+                            })
+                        })
+                        .collect()
+                } else {
+                    vec![]
+                };
+
                 json!({
                     "status": "ok",
                     "team": state.team_name,
                     "members": members,
+                    "agent_sessions": agent_sessions,
                     "memory_count": state.memory_count,
                     "pattern_count": state.pattern_count,
                     "updated_at": state.updated_at.to_rfc3339(),
@@ -969,9 +1067,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_registry_has_22_tools() {
+    fn test_registry_has_23_tools() {
         let registry = ToolRegistry::new();
-        assert_eq!(registry.list().len(), 22);
+        assert_eq!(registry.list().len(), 23);
     }
 
     #[test]

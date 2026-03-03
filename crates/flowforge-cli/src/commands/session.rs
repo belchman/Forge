@@ -1,5 +1,5 @@
 use colored::Colorize;
-use flowforge_core::{FlowForgeConfig, Result};
+use flowforge_core::{AgentSessionStatus, FlowForgeConfig, Result};
 use flowforge_memory::MemoryDb;
 
 fn open_db() -> Result<MemoryDb> {
@@ -90,5 +90,63 @@ pub fn metrics() -> Result<()> {
         );
     }
 
+    Ok(())
+}
+
+pub fn agents(session_id: Option<&str>) -> Result<()> {
+    let db = open_db()?;
+
+    let parent_id = match session_id {
+        Some(id) => id.to_string(),
+        None => match db.get_current_session()? {
+            Some(s) => s.id,
+            None => {
+                println!("{}", "No active session".yellow());
+                return Ok(());
+            }
+        },
+    };
+
+    let agent_sessions = db.get_agent_sessions(&parent_id)?;
+    if agent_sessions.is_empty() {
+        println!("No agent sessions for this session");
+        return Ok(());
+    }
+
+    println!(
+        "{:<10} {:<14} {:<12} {:<20} {:<10} {:<6} {:<6}",
+        "ID", "Agent Type", "Status", "Started", "Duration", "Edits", "Cmds"
+    );
+    println!("{}", "─".repeat(80));
+
+    for a in &agent_sessions {
+        let status_str = match a.status {
+            AgentSessionStatus::Active => "active".green().to_string(),
+            AgentSessionStatus::Idle => "idle".yellow().to_string(),
+            AgentSessionStatus::Completed => "completed".dimmed().to_string(),
+            AgentSessionStatus::Error => "error".red().to_string(),
+        };
+
+        let duration = if let Some(end) = a.ended_at {
+            let secs = (end - a.started_at).num_seconds();
+            format!("{}s", secs)
+        } else {
+            let secs = (chrono::Utc::now() - a.started_at).num_seconds();
+            format!("{}s+", secs)
+        };
+
+        let id_short = if a.id.len() >= 8 { &a.id[..8] } else { &a.id };
+
+        println!(
+            "{:<10} {:<14} {:<12} {:<20} {:<10} {:<6} {:<6}",
+            id_short,
+            a.agent_type,
+            status_str,
+            a.started_at.format("%Y-%m-%d %H:%M"),
+            duration,
+            a.edits,
+            a.commands,
+        );
+    }
     Ok(())
 }

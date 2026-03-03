@@ -1,5 +1,5 @@
 use flowforge_core::hook::{self, ContextOutput, SubagentStartInput};
-use flowforge_core::FlowForgeConfig;
+use flowforge_core::{AgentSession, AgentSessionStatus, FlowForgeConfig};
 use flowforge_tmux::TmuxStateManager;
 
 pub fn run() -> flowforge_core::Result<()> {
@@ -17,6 +17,37 @@ pub fn run() -> flowforge_core::Result<()> {
         input.agent_id,
         input.agent_type.as_deref().unwrap_or("general")
     ));
+
+    // Create agent session in DB
+    {
+        let db_path = config.db_path();
+        if db_path.exists() {
+            if let Ok(db) = flowforge_memory::MemoryDb::open(&db_path) {
+                let parent_id = db
+                    .get_current_session()
+                    .ok()
+                    .flatten()
+                    .map(|s| s.id)
+                    .unwrap_or_default();
+                let agent_session = AgentSession {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    parent_session_id: parent_id,
+                    agent_id: input.agent_id.clone(),
+                    agent_type: input
+                        .agent_type
+                        .clone()
+                        .unwrap_or_else(|| "general".to_string()),
+                    status: AgentSessionStatus::Active,
+                    started_at: chrono::Utc::now(),
+                    ended_at: None,
+                    edits: 0,
+                    commands: 0,
+                    task_id: None,
+                };
+                let _ = db.create_agent_session(&agent_session);
+            }
+        }
+    }
 
     // Log work event for agent start and update assignee (C4)
     if config.work_tracking.log_all {

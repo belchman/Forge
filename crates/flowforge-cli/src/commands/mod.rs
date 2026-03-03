@@ -6,5 +6,6 @@ pub mod memory;
 pub mod route;
 pub mod session;
 pub mod status;
+pub mod statusline;
 pub mod tmux;
 pub mod work;

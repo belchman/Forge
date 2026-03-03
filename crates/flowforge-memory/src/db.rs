@@ -4,8 +4,8 @@ use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 
 use flowforge_core::{
-    work_tracking::WorkDb, EditRecord, Error, LongTermPattern, Result, RoutingWeight, SessionInfo,
-    ShortTermPattern, WorkEvent, WorkFilter, WorkItem,
+    work_tracking::WorkDb, AgentSession, AgentSessionStatus, EditRecord, Error, LongTermPattern,
+    Result, RoutingWeight, SessionInfo, ShortTermPattern, WorkEvent, WorkFilter, WorkItem,
 };
 
 /// (db_id, source_type, source_id, vector)
@@ -147,6 +147,21 @@ impl MemoryDb {
             CREATE INDEX IF NOT EXISTS idx_work_events_item ON work_events(work_item_id);
             CREATE UNIQUE INDEX IF NOT EXISTS idx_work_items_external_id
                 ON work_items(external_id) WHERE external_id IS NOT NULL;
+
+            CREATE TABLE IF NOT EXISTS agent_sessions (
+                id TEXT PRIMARY KEY,
+                parent_session_id TEXT NOT NULL,
+                agent_id TEXT NOT NULL,
+                agent_type TEXT NOT NULL DEFAULT 'general',
+                status TEXT NOT NULL DEFAULT 'active',
+                started_at TEXT NOT NULL,
+                ended_at TEXT,
+                edits INTEGER DEFAULT 0,
+                commands INTEGER DEFAULT 0,
+                task_id TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_agent_sessions_parent ON agent_sessions(parent_session_id);
+            CREATE INDEX IF NOT EXISTS idx_agent_sessions_agent ON agent_sessions(agent_id);
         ",
             )
             .map_err(|e| Error::Sqlite(e.to_string()))?;
@@ -325,6 +340,116 @@ impl MemoryDb {
             .execute(
                 "UPDATE sessions SET commands = commands + 1 WHERE id = ?1",
                 params![session_id],
+            )
+            .map_err(|e| Error::Sqlite(e.to_string()))?;
+        Ok(())
+    }
+
+    // ── Agent Sessions ──
+
+    pub fn create_agent_session(&self, session: &AgentSession) -> Result<()> {
+        self.conn
+            .execute(
+                "INSERT OR REPLACE INTO agent_sessions
+                 (id, parent_session_id, agent_id, agent_type, status, started_at, ended_at, edits, commands, task_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                params![
+                    session.id,
+                    session.parent_session_id,
+                    session.agent_id,
+                    session.agent_type,
+                    session.status.to_string(),
+                    session.started_at.to_rfc3339(),
+                    session.ended_at.map(|t| t.to_rfc3339()),
+                    session.edits,
+                    session.commands,
+                    session.task_id,
+                ],
+            )
+            .map_err(|e| Error::Sqlite(e.to_string()))?;
+        Ok(())
+    }
+
+    pub fn end_agent_session(&self, agent_id: &str, status: AgentSessionStatus) -> Result<()> {
+        let now = Utc::now().to_rfc3339();
+        self.conn
+            .execute(
+                "UPDATE agent_sessions SET ended_at = ?1, status = ?2
+                 WHERE agent_id = ?3 AND ended_at IS NULL",
+                params![now, status.to_string(), agent_id],
+            )
+            .map_err(|e| Error::Sqlite(e.to_string()))?;
+        Ok(())
+    }
+
+    pub fn update_agent_session_status(
+        &self,
+        agent_id: &str,
+        status: AgentSessionStatus,
+    ) -> Result<()> {
+        self.conn
+            .execute(
+                "UPDATE agent_sessions SET status = ?1
+                 WHERE agent_id = ?2 AND ended_at IS NULL",
+                params![status.to_string(), agent_id],
+            )
+            .map_err(|e| Error::Sqlite(e.to_string()))?;
+        Ok(())
+    }
+
+    pub fn get_agent_sessions(&self, parent_session_id: &str) -> Result<Vec<AgentSession>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT id, parent_session_id, agent_id, agent_type, status,
+                        started_at, ended_at, edits, commands, task_id
+                 FROM agent_sessions WHERE parent_session_id = ?1
+                 ORDER BY started_at DESC",
+            )
+            .map_err(|e| Error::Sqlite(e.to_string()))?;
+        let rows = stmt
+            .query_map(params![parent_session_id], |row| {
+                Ok(parse_agent_session_row(row))
+            })
+            .map_err(|e| Error::Sqlite(e.to_string()))?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| Error::Sqlite(e.to_string()))
+    }
+
+    pub fn get_active_agent_sessions(&self) -> Result<Vec<AgentSession>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT id, parent_session_id, agent_id, agent_type, status,
+                        started_at, ended_at, edits, commands, task_id
+                 FROM agent_sessions WHERE ended_at IS NULL
+                 ORDER BY started_at DESC",
+            )
+            .map_err(|e| Error::Sqlite(e.to_string()))?;
+        let rows = stmt
+            .query_map([], |row| Ok(parse_agent_session_row(row)))
+            .map_err(|e| Error::Sqlite(e.to_string()))?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| Error::Sqlite(e.to_string()))
+    }
+
+    pub fn increment_agent_edits(&self, agent_id: &str) -> Result<()> {
+        self.conn
+            .execute(
+                "UPDATE agent_sessions SET edits = edits + 1
+                 WHERE agent_id = ?1 AND ended_at IS NULL",
+                params![agent_id],
+            )
+            .map_err(|e| Error::Sqlite(e.to_string()))?;
+        Ok(())
+    }
+
+    pub fn increment_agent_commands(&self, agent_id: &str) -> Result<()> {
+        self.conn
+            .execute(
+                "UPDATE agent_sessions SET commands = commands + 1
+                 WHERE agent_id = ?1 AND ended_at IS NULL",
+                params![agent_id],
             )
             .map_err(|e| Error::Sqlite(e.to_string()))?;
         Ok(())
@@ -1222,6 +1347,29 @@ fn parse_work_item_row(row: &rusqlite::Row) -> WorkItem {
             .map(parse_datetime),
         session_id: row.get(14).unwrap_or_default(),
         metadata: row.get(15).unwrap_or_default(),
+    }
+}
+
+fn parse_agent_session_row(row: &rusqlite::Row) -> AgentSession {
+    AgentSession {
+        id: row.get(0).unwrap_or_default(),
+        parent_session_id: row.get(1).unwrap_or_default(),
+        agent_id: row.get(2).unwrap_or_default(),
+        agent_type: row.get(3).unwrap_or_default(),
+        status: row
+            .get::<_, String>(4)
+            .unwrap_or_default()
+            .parse()
+            .unwrap_or(AgentSessionStatus::Active),
+        started_at: parse_datetime(row.get::<_, String>(5).unwrap_or_default()),
+        ended_at: row
+            .get::<_, Option<String>>(6)
+            .ok()
+            .flatten()
+            .map(parse_datetime),
+        edits: row.get(7).unwrap_or(0),
+        commands: row.get(8).unwrap_or(0),
+        task_id: row.get(9).ok().flatten(),
     }
 }
 

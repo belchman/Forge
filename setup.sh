@@ -2,29 +2,27 @@
 set -euo pipefail
 
 # FlowForge Setup Script
-# Installs FlowForge and initializes it for the current project.
+# Builds and installs FlowForge globally. Run `flowforge init --project`
+# separately in each project where you want to use FlowForge.
 #
 # Usage:
-#   ./setup.sh              # Build, install, and init for current project
-#   ./setup.sh --global     # Also set up global config
-#   ./setup.sh --no-init    # Only build and install, skip project init
+#   ./setup.sh              # Build and install
+#   ./setup.sh --help       # Show help
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DO_INIT=true
-DO_GLOBAL=false
 
 for arg in "$@"; do
     case "$arg" in
-        --global) DO_GLOBAL=true ;;
-        --no-init) DO_INIT=false ;;
         --help|-h)
             echo "FlowForge Setup"
             echo ""
-            echo "Usage: ./setup.sh [OPTIONS]"
+            echo "Usage: ./setup.sh"
+            echo ""
+            echo "Builds FlowForge and installs the binary to ~/.cargo/bin."
+            echo "After installing, cd to your project and run:"
+            echo "  flowforge init --project"
             echo ""
             echo "Options:"
-            echo "  --global     Also set up global config (~/.flowforge/)"
-            echo "  --no-init    Only build and install, skip project init"
             echo "  -h, --help   Show this help"
             exit 0
             ;;
@@ -42,14 +40,70 @@ echo ""
 echo "==> Installing flowforge to ~/.cargo/bin..."
 cargo install --path "$SCRIPT_DIR/crates/flowforge-cli" --force 2>&1
 
-# Verify it's on PATH
+# Ensure ~/.cargo/bin is on PATH for the current shell
+if ! command -v flowforge &>/dev/null; then
+    # Try sourcing cargo env
+    if [ -f "$HOME/.cargo/env" ]; then
+        # shellcheck disable=SC1091
+        . "$HOME/.cargo/env"
+    fi
+fi
+
+# Detect the user's shell profile
+detect_shell_profile() {
+    local shell_name
+    shell_name="$(basename "${SHELL:-/bin/bash}")"
+    case "$shell_name" in
+        zsh)  echo "$HOME/.zshrc" ;;
+        bash)
+            if [ -f "$HOME/.bash_profile" ]; then
+                echo "$HOME/.bash_profile"
+            else
+                echo "$HOME/.bashrc"
+            fi
+            ;;
+        fish) echo "$HOME/.config/fish/config.fish" ;;
+        *)    echo "$HOME/.profile" ;;
+    esac
+}
+
+# Add cargo env sourcing to shell profile if not already present
+ensure_path() {
+    local profile
+    profile="$(detect_shell_profile)"
+
+    if [ -f "$profile" ] && grep -q '\.cargo/env' "$profile" 2>/dev/null; then
+        return 0  # Already configured
+    fi
+
+    echo ""
+    echo "==> Adding ~/.cargo/bin to PATH in $profile..."
+    echo "" >> "$profile"
+    echo '# Added by FlowForge setup' >> "$profile"
+    echo '. "$HOME/.cargo/env"' >> "$profile"
+    echo "    Added: . \"\$HOME/.cargo/env\" to $profile"
+
+    # Source it now so the rest of the script works
+    if [ -f "$HOME/.cargo/env" ]; then
+        # shellcheck disable=SC1091
+        . "$HOME/.cargo/env"
+    fi
+}
+
+# If flowforge still isn't found, fix the PATH
+if ! command -v flowforge &>/dev/null; then
+    ensure_path
+fi
+
+# Final check
 if ! command -v flowforge &>/dev/null; then
     echo ""
-    echo "WARNING: flowforge is not on your PATH."
-    echo "Add ~/.cargo/bin to your PATH:"
-    echo '  export PATH="$HOME/.cargo/bin:$PATH"'
+    echo "WARNING: flowforge is still not on your PATH."
+    echo "Manually add this to your shell profile:"
+    echo '  . "$HOME/.cargo/env"'
     echo ""
-    echo "Add this to your ~/.zshrc or ~/.bashrc to make it permanent."
+    echo "Then restart your terminal and run:"
+    echo "  cd /your/project && flowforge init --project"
     exit 1
 fi
 
@@ -57,37 +111,27 @@ echo ""
 echo "==> Installed: $(which flowforge)"
 echo "    Version:   $(flowforge --version)"
 
-if $DO_INIT; then
-    echo ""
-    echo "==> Initializing FlowForge for current project ($(pwd))..."
-    flowforge init --project
-
-    if $DO_GLOBAL; then
-        echo ""
-        echo "==> Setting up global config..."
-        flowforge init --global
-    fi
-fi
-
 echo ""
 echo "============================================"
-echo " FlowForge is ready!"
+echo " FlowForge is installed!"
 echo "============================================"
 echo ""
-echo "What was set up:"
+echo "To set up a project, cd to your project directory and run:"
+echo ""
+echo "  cd /path/to/your/project"
+echo "  flowforge init --project"
+echo ""
+echo "This will create:"
 echo "  - .flowforge/config.toml  (project config)"
 echo "  - .flowforge/flowforge.db (SQLite database)"
 echo "  - .claude/settings.json   (Claude Code hooks)"
 echo "  - .mcp.json               (MCP server auto-registration)"
 echo "  - CLAUDE.md               (agent instructions)"
 echo ""
-echo "Quick start:"
+echo "Quick start (after init):"
 echo "  flowforge agent list              # See 60+ built-in agents"
 echo "  flowforge route \"<task>\"           # Get agent suggestions"
-echo "  flowforge work create --type task --title \"My task\"  # Create a tracked work item"
-echo "  flowforge work status             # See work tracking status"
-echo "  flowforge session current         # Check current session"
-echo "  flowforge learn stats             # Check learning stats"
+echo "  flowforge work create --type task --title \"My task\""
 echo "  flowforge mcp serve               # Start MCP server (auto via .mcp.json)"
 echo ""
 echo "Start a new Claude Code session to activate hooks."

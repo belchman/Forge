@@ -81,15 +81,39 @@ fn init_global() -> Result<()> {
     Ok(())
 }
 
-/// Build the FlowForge hooks settings as a JSON Value
+/// Resolve the absolute path to the flowforge binary.
+/// Prefers the currently running executable, falls back to ~/.cargo/bin/flowforge.
+fn flowforge_bin_path() -> String {
+    // Use the path of the currently running binary if available
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(path) = exe.to_str() {
+            return path.to_string();
+        }
+    }
+    // Fallback: ~/.cargo/bin/flowforge
+    if let Some(home) = dirs::home_dir() {
+        return home
+            .join(".cargo")
+            .join("bin")
+            .join("flowforge")
+            .to_string_lossy()
+            .to_string();
+    }
+    // Last resort: bare command name
+    "flowforge".to_string()
+}
+
+/// Build the FlowForge hooks settings as a JSON Value.
+/// Uses the absolute binary path so hooks work even if ~/.cargo/bin isn't on PATH.
 fn flowforge_hooks() -> serde_json::Value {
+    let bin = flowforge_bin_path();
     serde_json::json!({
         "PreToolUse": [
             {
                 "matcher": "Bash",
                 "hooks": [{
                     "type": "command",
-                    "command": "flowforge hook pre-tool-use",
+                    "command": format!("{bin} hook pre-tool-use"),
                     "timeout": 3000
                 }]
             }
@@ -99,7 +123,7 @@ fn flowforge_hooks() -> serde_json::Value {
                 "matcher": "Write|Edit|MultiEdit",
                 "hooks": [{
                     "type": "command",
-                    "command": "flowforge hook post-tool-use",
+                    "command": format!("{bin} hook post-tool-use"),
                     "timeout": 3000
                 }]
             }
@@ -108,7 +132,7 @@ fn flowforge_hooks() -> serde_json::Value {
             {
                 "hooks": [{
                     "type": "command",
-                    "command": "flowforge hook post-tool-use-failure",
+                    "command": format!("{bin} hook post-tool-use-failure"),
                     "timeout": 3000
                 }]
             }
@@ -117,7 +141,7 @@ fn flowforge_hooks() -> serde_json::Value {
             {
                 "hooks": [{
                     "type": "command",
-                    "command": "flowforge hook notification",
+                    "command": format!("{bin} hook notification"),
                     "timeout": 3000
                 }]
             }
@@ -126,7 +150,7 @@ fn flowforge_hooks() -> serde_json::Value {
             {
                 "hooks": [{
                     "type": "command",
-                    "command": "flowforge hook user-prompt-submit",
+                    "command": format!("{bin} hook user-prompt-submit"),
                     "timeout": 5000
                 }]
             }
@@ -135,7 +159,7 @@ fn flowforge_hooks() -> serde_json::Value {
             {
                 "hooks": [{
                     "type": "command",
-                    "command": "flowforge hook session-start"
+                    "command": format!("{bin} hook session-start")
                 }]
             }
         ],
@@ -143,7 +167,7 @@ fn flowforge_hooks() -> serde_json::Value {
             {
                 "hooks": [{
                     "type": "command",
-                    "command": "flowforge hook session-end"
+                    "command": format!("{bin} hook session-end")
                 }]
             }
         ],
@@ -151,7 +175,7 @@ fn flowforge_hooks() -> serde_json::Value {
             {
                 "hooks": [{
                     "type": "command",
-                    "command": "flowforge hook stop"
+                    "command": format!("{bin} hook stop")
                 }]
             }
         ],
@@ -159,7 +183,7 @@ fn flowforge_hooks() -> serde_json::Value {
             {
                 "hooks": [{
                     "type": "command",
-                    "command": "flowforge hook pre-compact"
+                    "command": format!("{bin} hook pre-compact")
                 }]
             }
         ],
@@ -167,7 +191,7 @@ fn flowforge_hooks() -> serde_json::Value {
             {
                 "hooks": [{
                     "type": "command",
-                    "command": "flowforge hook subagent-start"
+                    "command": format!("{bin} hook subagent-start")
                 }]
             }
         ],
@@ -175,7 +199,7 @@ fn flowforge_hooks() -> serde_json::Value {
             {
                 "hooks": [{
                     "type": "command",
-                    "command": "flowforge hook subagent-stop"
+                    "command": format!("{bin} hook subagent-stop")
                 }]
             }
         ],
@@ -183,7 +207,7 @@ fn flowforge_hooks() -> serde_json::Value {
             {
                 "hooks": [{
                     "type": "command",
-                    "command": "flowforge hook teammate-idle"
+                    "command": format!("{bin} hook teammate-idle")
                 }]
             }
         ],
@@ -191,7 +215,7 @@ fn flowforge_hooks() -> serde_json::Value {
             {
                 "hooks": [{
                     "type": "command",
-                    "command": "flowforge hook task-completed"
+                    "command": format!("{bin} hook task-completed")
                 }]
             }
         ]
@@ -255,7 +279,9 @@ fn write_settings_json() -> Result<()> {
                                 hooks.iter().any(|h| {
                                     h.get("command")
                                         .and_then(|c| c.as_str())
-                                        .map(|c| c.starts_with("flowforge"))
+                                        .map(|c| {
+                                            c.starts_with("flowforge") || c.contains("/flowforge")
+                                        })
                                         .unwrap_or(false)
                                 })
                             })
@@ -310,7 +336,7 @@ fn write_mcp_json() -> Result<()> {
     if let Some(servers_obj) = servers.as_object_mut() {
         servers_obj.entry("flowforge").or_insert_with(|| {
             serde_json::json!({
-                "command": "flowforge",
+                "command": flowforge_bin_path(),
                 "args": ["mcp", "serve"]
             })
         });

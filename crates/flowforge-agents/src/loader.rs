@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use flowforge_core::{AgentDef, AgentSource, Error, Result};
-use tracing::warn;
+use tracing::{debug, warn};
 
 include!(concat!(env!("OUT_DIR"), "/builtin_agents.rs"));
 
@@ -101,7 +101,9 @@ fn load_from_dir_recursive(
                 agents.push(agent);
             }
             Err(e) => {
-                warn!("Failed to parse agent file {}: {e}", file_path.display());
+                // Non-frontmatter .md files are expected (e.g. plain Claude Code agents)
+                // — only log at debug level to avoid spamming the console.
+                debug!("Skipping non-agent file {}: {e}", file_path.display());
             }
         }
     }

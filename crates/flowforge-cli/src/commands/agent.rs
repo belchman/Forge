@@ -1,6 +1,6 @@
-use flowforge_core::{FlowForgeConfig, Result};
-use flowforge_agents::AgentRegistry;
 use colored::Colorize;
+use flowforge_agents::AgentRegistry;
+use flowforge_core::{FlowForgeConfig, Result};
 
 pub fn list() -> Result<()> {
     let config = FlowForgeConfig::load(&FlowForgeConfig::config_path())?;
@@ -14,7 +14,10 @@ pub fn list() -> Result<()> {
         return Ok(());
     }
 
-    println!("{:<25} {:<10} {:<40} {}", "Name", "Priority", "Description", "Source");
+    println!(
+        "{:<25} {:<10} {:<40} Source",
+        "Name", "Priority", "Description"
+    );
     println!("{}", "─".repeat(90));
 
     for agent in &agents {
@@ -26,8 +29,13 @@ pub fn list() -> Result<()> {
         };
         let source = format!("{:?}", agent.source);
 
-        println!("{:<25} {:<10} {:<40} {}",
-            agent.name.cyan(), priority, desc, source.dimmed());
+        println!(
+            "{:<25} {:<10} {:<40} {}",
+            agent.name.cyan(),
+            priority,
+            desc,
+            source.dimmed()
+        );
     }
 
     println!("\n{} agents loaded", agents.len());

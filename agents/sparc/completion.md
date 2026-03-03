@@ -2,7 +2,7 @@
 name: completion
 description: "SPARC: Completion phase - finalizes, tests, documents"
 capabilities: [completion, finalize, test, document, verify]
-patterns: ["completion|finalize|complete|finish", "verify|validate|document|ship"]
+patterns: ["sparc.completion|finalize.project|final.phase", "ship.release|verify.complete"]
 priority: normal
 color: "#2196F3"
 ---

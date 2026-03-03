@@ -2,7 +2,7 @@
 name: coder
 description: Implements features, fixes bugs, writes production code
 capabilities: [implement, refactor, debug, optimize, code]
-patterns: ["implement|create|build|add|write|code", "fix|bug|error|crash|issue"]
+patterns: ["implement|refactor|build.feature|write.code", "fix.bug|bug|error|crash|debug"]
 priority: high
 color: "#FF6B35"
 ---

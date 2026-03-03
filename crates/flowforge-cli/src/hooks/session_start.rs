@@ -1,7 +1,7 @@
+use chrono::Utc;
 use flowforge_core::hook::{self, ContextOutput, SessionStartInput};
 use flowforge_core::{FlowForgeConfig, Result, SessionInfo};
 use flowforge_memory::MemoryDb;
-use chrono::Utc;
 use uuid::Uuid;
 
 pub fn run() -> Result<()> {
@@ -42,9 +42,7 @@ pub fn run() -> Result<()> {
     db.create_session(&session)?;
 
     // Build context with session info and stats
-    let mut context_parts = vec![
-        format!("[FlowForge] Session {} started.", &session_id[..8]),
-    ];
+    let mut context_parts = vec![format!("[FlowForge] Session {} started.", &session_id[..8])];
 
     // Include stats from previous sessions
     if let Ok(sessions) = db.list_sessions(5) {
@@ -55,6 +53,24 @@ pub fn run() -> Result<()> {
                 sessions.len(),
                 total_edits
             ));
+        }
+    }
+
+    // Sync from external backend before showing context (C4)
+    let _ = flowforge_core::work_tracking::sync_from_backend(&db, &config.work_tracking);
+
+    // Include active work items (C4)
+    let work_filter = flowforge_core::WorkFilter {
+        status: Some("in_progress".to_string()),
+        ..Default::default()
+    };
+    if let Ok(active_items) = db.list_work_items(&work_filter) {
+        if !active_items.is_empty() {
+            let mut work_ctx = format!("{} active work items:", active_items.len());
+            for item in active_items.iter().take(3) {
+                work_ctx.push_str(&format!(" [{}] {}", item.item_type, item.title));
+            }
+            context_parts.push(work_ctx);
         }
     }
 

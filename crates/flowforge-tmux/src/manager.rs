@@ -82,13 +82,19 @@ impl TmuxManager {
             std::env::temp_dir().join(format!("flowforge-tmux-{}.txt", self.session_name));
         std::fs::write(&tmp_path, &display)?;
 
-        // Clear the pane and display the content
+        // Clear the pane and display the content using load-buffer to avoid shell injection
+        let _ = Command::new("tmux")
+            .args(["send-keys", "-t", &self.session_name, "clear", "Enter"])
+            .status();
+        let _ = Command::new("tmux")
+            .args(["load-buffer", &tmp_path.display().to_string()])
+            .status();
         let _ = Command::new("tmux")
             .args([
                 "send-keys",
                 "-t",
                 &self.session_name,
-                &format!("clear && cat '{}'", tmp_path.display()),
+                "tmux show-buffer",
                 "Enter",
             ])
             .status();

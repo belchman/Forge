@@ -2,7 +2,7 @@
 name: sync-coordinator
 description: Coordinates synchronization across repos and services
 capabilities: [sync, coordinate, dependency-graph, order, cascade]
-patterns: ["sync|synchronize|coordinate|cascade", "dependency.graph|order|sequence"]
+patterns: ["sync.repo|synchronize|cross.repo|cascade", "dependency.graph|sync.service|sequence"]
 priority: normal
 color: "#2188FF"
 ---

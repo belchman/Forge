@@ -7,11 +7,7 @@ pub fn run() -> Result<()> {
 
     // Update tmux state
     let state_mgr = TmuxStateManager::new(FlowForgeConfig::tmux_state_path());
-    let _ = state_mgr.update_member_status(
-        &input.teammate_name,
-        TeamMemberStatus::Idle,
-        None,
-    );
+    let _ = state_mgr.update_member_status(&input.teammate_name, TeamMemberStatus::Idle, None);
     let _ = state_mgr.add_event(format!("{} went idle", input.teammate_name));
 
     Ok(())

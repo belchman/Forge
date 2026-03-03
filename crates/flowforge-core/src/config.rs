@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 /// Main FlowForge configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct FlowForgeConfig {
     #[serde(default)]
     pub general: GeneralConfig,
@@ -18,6 +18,8 @@ pub struct FlowForgeConfig {
     pub tmux: TmuxConfig,
     #[serde(default)]
     pub hooks: HooksConfig,
+    #[serde(default)]
+    pub work_tracking: WorkTrackingConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -181,40 +183,114 @@ impl Default for HooksConfig {
     }
 }
 
-// Default value functions
-fn default_log_level() -> String { "info".to_string() }
-fn default_true() -> bool { true }
-fn default_db_name() -> String { "flowforge.db".to_string() }
-fn default_hnsw_m() -> usize { 16 }
-fn default_hnsw_ef_construction() -> usize { 100 }
-fn default_hnsw_ef_search() -> usize { 50 }
-fn default_embedding_dim() -> usize { 128 }
-fn default_pattern_weight() -> f64 { 0.40 }
-fn default_capability_weight() -> f64 { 0.30 }
-fn default_learned_weight() -> f64 { 0.25 }
-fn default_priority_weight() -> f64 { 0.05 }
-fn default_short_term_max() -> usize { 500 }
-fn default_short_term_ttl_hours() -> u64 { 24 }
-fn default_long_term_max() -> usize { 2000 }
-fn default_promotion_usage() -> u32 { 3 }
-fn default_promotion_confidence() -> f64 { 0.6 }
-fn default_decay_rate() -> f64 { 0.005 }
-fn default_dedup_threshold() -> f64 { 0.95 }
-fn default_tmux_session() -> String { "flowforge".to_string() }
-fn default_refresh_interval() -> u64 { 1000 }
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkTrackingConfig {
+    #[serde(default = "default_backend_auto")]
+    pub backend: String,
+    #[serde(default = "default_true")]
+    pub log_all: bool,
+    #[serde(default)]
+    pub require_task: bool,
+    #[serde(default)]
+    pub kanbus: KanbusSyncConfig,
+    #[serde(default)]
+    pub beads: BeadsSyncConfig,
+    #[serde(default)]
+    pub claude_tasks: ClaudeTasksSyncConfig,
+}
 
-impl Default for FlowForgeConfig {
+impl Default for WorkTrackingConfig {
     fn default() -> Self {
         Self {
-            general: GeneralConfig::default(),
-            memory: MemoryConfig::default(),
-            agents: AgentsConfig::default(),
-            routing: RoutingConfig::default(),
-            patterns: PatternsConfig::default(),
-            tmux: TmuxConfig::default(),
-            hooks: HooksConfig::default(),
+            backend: default_backend_auto(),
+            log_all: true,
+            require_task: false,
+            kanbus: KanbusSyncConfig::default(),
+            beads: BeadsSyncConfig::default(),
+            claude_tasks: ClaudeTasksSyncConfig::default(),
         }
     }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct KanbusSyncConfig {
+    #[serde(default)]
+    pub project_key: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct BeadsSyncConfig {}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ClaudeTasksSyncConfig {
+    #[serde(default)]
+    pub list_id: Option<String>,
+}
+
+fn default_backend_auto() -> String {
+    "auto".to_string()
+}
+
+// Default value functions
+fn default_log_level() -> String {
+    "info".to_string()
+}
+fn default_true() -> bool {
+    true
+}
+fn default_db_name() -> String {
+    "flowforge.db".to_string()
+}
+fn default_hnsw_m() -> usize {
+    16
+}
+fn default_hnsw_ef_construction() -> usize {
+    100
+}
+fn default_hnsw_ef_search() -> usize {
+    50
+}
+fn default_embedding_dim() -> usize {
+    128
+}
+fn default_pattern_weight() -> f64 {
+    0.40
+}
+fn default_capability_weight() -> f64 {
+    0.30
+}
+fn default_learned_weight() -> f64 {
+    0.25
+}
+fn default_priority_weight() -> f64 {
+    0.05
+}
+fn default_short_term_max() -> usize {
+    500
+}
+fn default_short_term_ttl_hours() -> u64 {
+    24
+}
+fn default_long_term_max() -> usize {
+    2000
+}
+fn default_promotion_usage() -> u32 {
+    3
+}
+fn default_promotion_confidence() -> f64 {
+    0.6
+}
+fn default_decay_rate() -> f64 {
+    0.005
+}
+fn default_dedup_threshold() -> f64 {
+    0.95
+}
+fn default_tmux_session() -> String {
+    "flowforge".to_string()
+}
+fn default_refresh_interval() -> u64 {
+    1000
 }
 
 impl FlowForgeConfig {

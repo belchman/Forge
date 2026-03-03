@@ -9,12 +9,27 @@ pub fn run() -> Result<()> {
 
     // Update tmux state
     let state_mgr = TmuxStateManager::new(FlowForgeConfig::tmux_state_path());
-    let _ = state_mgr.update_member_status(
-        &input.agent_id,
-        TeamMemberStatus::Completed,
-        None,
-    );
+    let _ = state_mgr.update_member_status(&input.agent_id, TeamMemberStatus::Completed, None);
     let _ = state_mgr.add_event(format!("{} stopped", input.agent_id));
+
+    // Log work event for agent stop (C4)
+    if config.work_tracking.log_all {
+        let db_path = config.db_path();
+        if db_path.exists() {
+            if let Ok(db) = MemoryDb::open(&db_path) {
+                let event = flowforge_core::WorkEvent {
+                    id: 0,
+                    work_item_id: input.agent_id.clone(),
+                    event_type: "agent_stopped".to_string(),
+                    old_value: Some("active".to_string()),
+                    new_value: Some("completed".to_string()),
+                    actor: Some(format!("agent:{}", input.agent_id)),
+                    timestamp: chrono::Utc::now(),
+                };
+                let _ = db.record_work_event(&event);
+            }
+        }
+    }
 
     // Extract patterns from agent output if learning is enabled
     if config.hooks.learning {

@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "flowforge": {
+      "args": [
+        "mcp",
+        "serve"
+      ],
+      "command": "flowforge"
+    }
+  }
+}

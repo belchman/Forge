@@ -18,6 +18,31 @@ pub fn run() -> flowforge_core::Result<()> {
         input.agent_type.as_deref().unwrap_or("general")
     ));
 
+    // Log work event for agent start and update assignee (C4)
+    if config.work_tracking.log_all {
+        let db_path = config.db_path();
+        if db_path.exists() {
+            if let Ok(db) = flowforge_memory::MemoryDb::open(&db_path) {
+                let event = flowforge_core::WorkEvent {
+                    id: 0,
+                    work_item_id: input.agent_id.clone(),
+                    event_type: "agent_started".to_string(),
+                    old_value: None,
+                    new_value: input.agent_type.clone(),
+                    actor: Some(format!("agent:{}", input.agent_id)),
+                    timestamp: chrono::Utc::now(),
+                };
+                let _ = db.record_work_event(&event);
+
+                // Update assignee on any in-progress work items assigned to this agent
+                if let Some(ref task_id) = input.common.session_id {
+                    let agent_name = input.agent_type.as_deref().unwrap_or(&input.agent_id);
+                    let _ = db.update_work_item_assignee(task_id, agent_name);
+                }
+            }
+        }
+    }
+
     // Inject agent-specific context if we have an agent type match
     let mut context_parts = Vec::new();
 

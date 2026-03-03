@@ -28,18 +28,24 @@ pub fn run() -> Result<()> {
                 if !patterns.is_empty() {
                     guidance.push("- Active patterns:".to_string());
                     for p in &patterns {
-                        guidance.push(format!("  - [{}] {} (conf: {:.0}%)", p.category, p.content, p.confidence * 100.0));
+                        guidance.push(format!(
+                            "  - [{}] {} (conf: {:.0}%)",
+                            p.category,
+                            p.content,
+                            p.confidence * 100.0
+                        ));
                     }
                 }
             }
         }
     }
 
-    guidance.push("- Use `flowforge memory search <query>` to recall stored knowledge.".to_string());
+    guidance
+        .push("- Use `flowforge memory search <query>` to recall stored knowledge.".to_string());
     guidance.push("- Use `flowforge session current` to check session state.".to_string());
 
-    // pre-compact outputs plain text to stdout
-    println!("{}", guidance.join("\n"));
+    let output = flowforge_core::hook::ContextOutput::with_context(guidance.join("\n"));
+    hook::write_stdout(&output)?;
 
     Ok(())
 }

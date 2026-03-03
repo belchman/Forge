@@ -1,7 +1,7 @@
+use chrono::Utc;
 use flowforge_core::hook::{self, StopInput};
 use flowforge_core::{FlowForgeConfig, Result};
 use flowforge_memory::MemoryDb;
-use chrono::Utc;
 
 pub fn run() -> Result<()> {
     let _input: StopInput = hook::parse_stdin()?;

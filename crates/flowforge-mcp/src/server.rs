@@ -12,6 +12,12 @@ pub struct McpServer {
     tools: ToolRegistry,
 }
 
+impl Default for McpServer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl McpServer {
     pub fn new() -> Self {
         Self {
@@ -59,12 +65,9 @@ impl McpServer {
                     });
                     let mut out = serde_json::to_string(&err_response).unwrap_or_default();
                     out.push('\n');
-                    stdout
-                        .write_all(out.as_bytes())
-                        .await
-                        .map_err(|e| {
-                            flowforge_core::Error::Mcp(format!("stdout write error: {}", e))
-                        })?;
+                    stdout.write_all(out.as_bytes()).await.map_err(|e| {
+                        flowforge_core::Error::Mcp(format!("stdout write error: {}", e))
+                    })?;
                     stdout.flush().await.ok();
                     continue;
                 }
@@ -86,15 +89,11 @@ impl McpServer {
             stdout
                 .write_all(out.as_bytes())
                 .await
-                .map_err(|e| {
-                    flowforge_core::Error::Mcp(format!("stdout write error: {}", e))
-                })?;
+                .map_err(|e| flowforge_core::Error::Mcp(format!("stdout write error: {}", e)))?;
             stdout
                 .flush()
                 .await
-                .map_err(|e| {
-                    flowforge_core::Error::Mcp(format!("stdout flush error: {}", e))
-                })?;
+                .map_err(|e| flowforge_core::Error::Mcp(format!("stdout flush error: {}", e)))?;
         }
 
         Ok(())
@@ -102,10 +101,7 @@ impl McpServer {
 
     fn handle_request(&self, request: &Value) -> Value {
         let id = request.get("id").cloned().unwrap_or(Value::Null);
-        let method = request
-            .get("method")
-            .and_then(|m| m.as_str())
-            .unwrap_or("");
+        let method = request.get("method").and_then(|m| m.as_str()).unwrap_or("");
 
         match method {
             "initialize" => self.handle_initialize(id),
@@ -179,10 +175,7 @@ impl McpServer {
 
     fn handle_tools_call(&self, id: Value, request: &Value) -> Value {
         let params = request.get("params").cloned().unwrap_or(json!({}));
-        let tool_name = params
-            .get("name")
-            .and_then(|n| n.as_str())
-            .unwrap_or("");
+        let tool_name = params.get("name").and_then(|n| n.as_str()).unwrap_or("");
         let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
 
         if self.tools.get(tool_name).is_none() {
@@ -243,7 +236,7 @@ mod tests {
         });
         let resp = server.handle_request(&req);
         let tools = resp["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 18);
+        assert_eq!(tools.len(), 22);
     }
 
     #[test]

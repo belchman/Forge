@@ -9,7 +9,5 @@ pub fn serve() -> Result<()> {
         .build()
         .map_err(|e| flowforge_core::Error::Mcp(format!("Failed to create tokio runtime: {e}")))?;
 
-    rt.block_on(async {
-        server.run().await
-    })
+    rt.block_on(async { server.run().await })
 }

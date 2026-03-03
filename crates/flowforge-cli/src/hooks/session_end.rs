@@ -1,7 +1,7 @@
+use chrono::Utc;
 use flowforge_core::hook::{self, SessionEndInput};
 use flowforge_core::{FlowForgeConfig, Result};
 use flowforge_memory::MemoryDb;
-use chrono::Utc;
 
 pub fn run() -> Result<()> {
     let _input: SessionEndInput = hook::parse_stdin()?;
@@ -14,10 +14,35 @@ pub fn run() -> Result<()> {
 
     let db = MemoryDb::open(&db_path)?;
 
+    // Capture session data BEFORE ending it (get_current_session filters by ended_at IS NULL)
+    let current_session = db.get_current_session().ok().flatten();
+
     // End current session
-    if let Ok(Some(session)) = db.get_current_session() {
+    if let Some(ref session) = current_session {
         db.end_session(&session.id, Utc::now())?;
     }
+
+    // Log session end to work events (C4) — uses captured session data
+    if config.work_tracking.log_all {
+        if let Some(ref session) = current_session {
+            let event = flowforge_core::WorkEvent {
+                id: 0,
+                work_item_id: session.id.clone(),
+                event_type: "session_ended".to_string(),
+                old_value: None,
+                new_value: Some(format!(
+                    "edits: {}, commands: {}",
+                    session.edits, session.commands
+                )),
+                actor: Some("hook:session-end".to_string()),
+                timestamp: chrono::Utc::now(),
+            };
+            let _ = db.record_work_event(&event);
+        }
+    }
+
+    // Push FlowForge-only items to external backend (C4)
+    let _ = flowforge_core::work_tracking::push_to_backend(&db, &config.work_tracking);
 
     // Run pattern consolidation
     if config.hooks.learning {

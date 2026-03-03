@@ -1,10 +1,16 @@
+use colored::Colorize;
 use flowforge_core::{FlowForgeConfig, Result};
 use flowforge_memory::MemoryDb;
-use colored::Colorize;
 
 fn open_db() -> Result<MemoryDb> {
     let config = FlowForgeConfig::load(&FlowForgeConfig::config_path())?;
-    MemoryDb::open(&config.db_path())
+    let db_path = config.db_path();
+    if !db_path.exists() {
+        return Err(flowforge_core::Error::Config(
+            "FlowForge not initialized. Run `flowforge init --project` first.".to_string(),
+        ));
+    }
+    MemoryDb::open(&db_path)
 }
 
 pub fn get(key: &str, namespace: &str) -> Result<()> {
@@ -12,7 +18,12 @@ pub fn get(key: &str, namespace: &str) -> Result<()> {
     match db.kv_get(key, namespace)? {
         Some(value) => println!("{value}"),
         None => {
-            eprintln!("{}: key '{}' not found in namespace '{}'", "Not found".yellow(), key, namespace);
+            eprintln!(
+                "{}: key '{}' not found in namespace '{}'",
+                "Not found".yellow(),
+                key,
+                namespace
+            );
             std::process::exit(1);
         }
     }

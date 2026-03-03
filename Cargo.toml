@@ -13,7 +13,7 @@ members = [
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-repository = "https://github.com/flowforge/flowforge"
+repository = "https://github.com/belchman/flow-forge"
 
 [workspace.dependencies]
 flowforge-core = { path = "crates/flowforge-core" }
@@ -25,17 +25,18 @@ flowforge-mcp = { path = "crates/flowforge-mcp" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
-toml = "0.8"
+toml = "1"
 clap = { version = "4", features = ["derive"] }
-rusqlite = { version = "0.31", features = ["bundled"] }
+rusqlite = { version = "0.36", features = ["bundled"] }
 instant-distance = "0.6"
 regex = "1"
 tokio = { version = "1", features = ["rt", "macros", "io-std", "io-util"] }
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
-colored = "2"
-dirs = "5"
+colored = "3"
+dirs = "6"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-thiserror = "1"
+thiserror = "2"
+fs2 = "0.4"

@@ -1,5 +1,5 @@
-use flowforge_core::{FlowForgeConfig, Result};
 use colored::Colorize;
+use flowforge_core::{FlowForgeConfig, Result};
 use std::path::Path;
 
 pub fn run(project: bool, global: bool) -> Result<()> {
@@ -24,20 +24,37 @@ fn init_project() -> Result<()> {
     // Create default config
     let config = FlowForgeConfig::default();
     config.save(&FlowForgeConfig::config_path())?;
-    println!("{} Created {}", "✓".green(), FlowForgeConfig::config_path().display());
+    println!(
+        "{} Created {}",
+        "✓".green(),
+        FlowForgeConfig::config_path().display()
+    );
 
     // Create database
     let db_path = config.db_path();
     let _db = flowforge_memory::MemoryDb::open(&db_path)?;
     println!("{} Created {}", "✓".green(), db_path.display());
 
-    // Create/update .claude/settings.json with hooks
+    // Create/update .claude/settings.json with hooks (A7: merge, don't overwrite)
     write_settings_json()?;
-    println!("{} Updated .claude/settings.json with FlowForge hooks", "✓".green());
+    println!(
+        "{} Updated .claude/settings.json with FlowForge hooks",
+        "✓".green()
+    );
+
+    // Create .mcp.json for auto-registration (B3)
+    write_mcp_json()?;
+    println!(
+        "{} Created .mcp.json for MCP auto-registration",
+        "✓".green()
+    );
 
     // Create CLAUDE.md additions
     write_claude_md()?;
-    println!("{} Created/updated CLAUDE.md with FlowForge instructions", "✓".green());
+    println!(
+        "{} Created/updated CLAUDE.md with FlowForge instructions",
+        "✓".green()
+    );
 
     println!("\n{}", "FlowForge initialized!".green().bold());
     println!("Start a new Claude Code session to activate hooks.");
@@ -56,119 +73,251 @@ fn init_global() -> Result<()> {
         config.save(&config_path)?;
     }
 
-    println!("{} Global FlowForge initialized at {}", "✓".green(), global_dir.display());
+    println!(
+        "{} Global FlowForge initialized at {}",
+        "✓".green(),
+        global_dir.display()
+    );
     Ok(())
 }
 
+/// Build the FlowForge hooks settings as a JSON Value
+fn flowforge_hooks() -> serde_json::Value {
+    serde_json::json!({
+        "PreToolUse": [
+            {
+                "matcher": "Bash",
+                "hooks": [{
+                    "type": "command",
+                    "command": "flowforge hook pre-tool-use",
+                    "timeout": 3000
+                }]
+            }
+        ],
+        "PostToolUse": [
+            {
+                "matcher": "Write|Edit|MultiEdit",
+                "hooks": [{
+                    "type": "command",
+                    "command": "flowforge hook post-tool-use",
+                    "timeout": 3000
+                }]
+            }
+        ],
+        "PostToolUseFailure": [
+            {
+                "hooks": [{
+                    "type": "command",
+                    "command": "flowforge hook post-tool-use-failure",
+                    "timeout": 3000
+                }]
+            }
+        ],
+        "Notification": [
+            {
+                "hooks": [{
+                    "type": "command",
+                    "command": "flowforge hook notification",
+                    "timeout": 3000
+                }]
+            }
+        ],
+        "UserPromptSubmit": [
+            {
+                "hooks": [{
+                    "type": "command",
+                    "command": "flowforge hook user-prompt-submit",
+                    "timeout": 5000
+                }]
+            }
+        ],
+        "SessionStart": [
+            {
+                "hooks": [{
+                    "type": "command",
+                    "command": "flowforge hook session-start"
+                }]
+            }
+        ],
+        "SessionEnd": [
+            {
+                "hooks": [{
+                    "type": "command",
+                    "command": "flowforge hook session-end"
+                }]
+            }
+        ],
+        "Stop": [
+            {
+                "hooks": [{
+                    "type": "command",
+                    "command": "flowforge hook stop"
+                }]
+            }
+        ],
+        "PreCompact": [
+            {
+                "hooks": [{
+                    "type": "command",
+                    "command": "flowforge hook pre-compact"
+                }]
+            }
+        ],
+        "SubagentStart": [
+            {
+                "hooks": [{
+                    "type": "command",
+                    "command": "flowforge hook subagent-start"
+                }]
+            }
+        ],
+        "SubagentStop": [
+            {
+                "hooks": [{
+                    "type": "command",
+                    "command": "flowforge hook subagent-stop"
+                }]
+            }
+        ],
+        "TeammateIdle": [
+            {
+                "hooks": [{
+                    "type": "command",
+                    "command": "flowforge hook teammate-idle"
+                }]
+            }
+        ],
+        "TaskCompleted": [
+            {
+                "hooks": [{
+                    "type": "command",
+                    "command": "flowforge hook task-completed"
+                }]
+            }
+        ]
+    })
+}
+
+/// Merge FlowForge hooks into existing settings.json, don't overwrite (A7).
 fn write_settings_json() -> Result<()> {
     let settings_dir = Path::new(".claude");
     std::fs::create_dir_all(settings_dir)?;
 
     let settings_path = settings_dir.join("settings.json");
 
-    let settings = serde_json::json!({
-        "env": {
-            "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
-        },
-        "hooks": {
-            "PreToolUse": [
+    // Load existing settings if present
+    let mut settings: serde_json::Value = if settings_path.exists() {
+        let content = std::fs::read_to_string(&settings_path)?;
+        serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+
+    // Ensure settings is a JSON object
+    if !settings.is_object() {
+        settings = serde_json::json!({});
+    }
+
+    // Ensure env section exists with teams enabled
+    let env = settings
+        .as_object_mut()
+        .expect("settings is guaranteed to be an object")
+        .entry("env")
+        .or_insert_with(|| serde_json::json!({}));
+    if let Some(env_obj) = env.as_object_mut() {
+        env_obj
+            .entry("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS")
+            .or_insert_with(|| serde_json::json!("1"));
+    }
+
+    // Deep-merge FlowForge hooks into existing hooks
+    let ff_hooks = flowforge_hooks();
+    let hooks = settings
+        .as_object_mut()
+        .expect("settings is guaranteed to be an object")
+        .entry("hooks")
+        .or_insert_with(|| serde_json::json!({}));
+
+    if let (Some(existing_hooks), Some(ff_hooks_obj)) =
+        (hooks.as_object_mut(), ff_hooks.as_object())
+    {
+        for (event_name, ff_hook_array) in ff_hooks_obj {
+            // Check if this event already has FlowForge hooks
+            let has_flowforge = existing_hooks
+                .get(event_name)
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter().any(|entry| {
+                        entry
+                            .get("hooks")
+                            .and_then(|h| h.as_array())
+                            .map(|hooks| {
+                                hooks.iter().any(|h| {
+                                    h.get("command")
+                                        .and_then(|c| c.as_str())
+                                        .map(|c| c.starts_with("flowforge"))
+                                        .unwrap_or(false)
+                                })
+                            })
+                            .unwrap_or(false)
+                    })
+                })
+                .unwrap_or(false);
+
+            if !has_flowforge {
+                // Append FlowForge hooks to existing hooks for this event
+                let event_hooks = existing_hooks
+                    .entry(event_name)
+                    .or_insert_with(|| serde_json::json!([]));
+                if let (Some(existing_arr), Some(ff_arr)) =
+                    (event_hooks.as_array_mut(), ff_hook_array.as_array())
                 {
-                    "matcher": "Bash",
-                    "hooks": [{
-                        "type": "command",
-                        "command": "flowforge hook pre-tool-use",
-                        "timeout": 3000
-                    }]
+                    for item in ff_arr {
+                        existing_arr.push(item.clone());
+                    }
                 }
-            ],
-            "PostToolUse": [
-                {
-                    "matcher": "Write|Edit|MultiEdit",
-                    "hooks": [{
-                        "type": "command",
-                        "command": "flowforge hook post-tool-use",
-                        "timeout": 3000
-                    }]
-                }
-            ],
-            "UserPromptSubmit": [
-                {
-                    "hooks": [{
-                        "type": "command",
-                        "command": "flowforge hook user-prompt-submit",
-                        "timeout": 5000
-                    }]
-                }
-            ],
-            "SessionStart": [
-                {
-                    "hooks": [{
-                        "type": "command",
-                        "command": "flowforge hook session-start"
-                    }]
-                }
-            ],
-            "SessionEnd": [
-                {
-                    "hooks": [{
-                        "type": "command",
-                        "command": "flowforge hook session-end"
-                    }]
-                }
-            ],
-            "Stop": [
-                {
-                    "hooks": [{
-                        "type": "command",
-                        "command": "flowforge hook stop"
-                    }]
-                }
-            ],
-            "PreCompact": [
-                {
-                    "hooks": [{
-                        "type": "command",
-                        "command": "flowforge hook pre-compact"
-                    }]
-                }
-            ],
-            "SubagentStart": [
-                {
-                    "hooks": [{
-                        "type": "command",
-                        "command": "flowforge hook subagent-start"
-                    }]
-                }
-            ],
-            "SubagentStop": [
-                {
-                    "hooks": [{
-                        "type": "command",
-                        "command": "flowforge hook subagent-stop"
-                    }]
-                }
-            ],
-            "TeammateIdle": [
-                {
-                    "hooks": [{
-                        "type": "command",
-                        "command": "flowforge hook teammate-idle"
-                    }]
-                }
-            ],
-            "TaskCompleted": [
-                {
-                    "hooks": [{
-                        "type": "command",
-                        "command": "flowforge hook task-completed"
-                    }]
-                }
-            ]
+            }
         }
-    });
+    }
 
     let content = serde_json::to_string_pretty(&settings)?;
     std::fs::write(&settings_path, content)?;
+
+    Ok(())
+}
+
+/// Create .mcp.json for MCP server auto-registration (B3).
+fn write_mcp_json() -> Result<()> {
+    let mcp_path = Path::new(".mcp.json");
+
+    // Load existing .mcp.json if present, merge
+    let mut mcp: serde_json::Value = if mcp_path.exists() {
+        let content = std::fs::read_to_string(mcp_path)?;
+        serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+
+    if !mcp.is_object() {
+        mcp = serde_json::json!({});
+    }
+    let servers = mcp
+        .as_object_mut()
+        .expect("mcp is guaranteed to be an object")
+        .entry("mcpServers")
+        .or_insert_with(|| serde_json::json!({}));
+
+    if let Some(servers_obj) = servers.as_object_mut() {
+        servers_obj.entry("flowforge").or_insert_with(|| {
+            serde_json::json!({
+                "command": "flowforge",
+                "args": ["mcp", "serve"]
+            })
+        });
+    }
+
+    let content = serde_json::to_string_pretty(&mcp)?;
+    std::fs::write(mcp_path, content)?;
 
     Ok(())
 }
@@ -185,7 +334,8 @@ fn write_claude_md() -> Result<()> {
         content.push_str("\n\n");
     }
 
-    content.push_str(r#"## [FlowForge] Agent Orchestration
+    content.push_str(
+        r#"## [FlowForge] Agent Orchestration
 
 This project uses FlowForge for intelligent agent orchestration.
 
@@ -218,6 +368,14 @@ FlowForge uses BOTH a fast Rust-based memory system AND Claude's native auto-mem
 - Claude memory: design decisions, workflow preferences, project philosophy
 - Use BOTH for critical knowledge — redundancy improves recall
 
+### Work Tracking
+- FlowForge tracks all work items (epics, tasks, bugs) automatically via hooks
+- Every task completion, agent assignment, and status change is logged
+- Use `flowforge work status` to see active work
+- Use `flowforge work create` to create tracked items
+- Supported backends: Claude Tasks, Beads, Kanbus (auto-detected)
+- MCP tools: `work_create`, `work_list`, `work_update`, `work_log`
+
 ### tmux Monitor
 - Run `flowforge tmux start` for real-time team monitoring
 - The monitor updates automatically via hooks
@@ -226,7 +384,8 @@ FlowForge uses BOTH a fast Rust-based memory system AND Claude's native auto-mem
 - Run `flowforge agent list` to see all available agents
 - Run `flowforge route "<task>"` to get agent suggestions
 - Run `flowforge learn stats` to check learning progress
-"#);
+"#,
+    );
 
     std::fs::write(claude_md_path, content)?;
     Ok(())

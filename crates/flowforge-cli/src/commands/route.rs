@@ -1,8 +1,8 @@
-use std::collections::HashMap;
-use flowforge_core::{FlowForgeConfig, Result};
-use flowforge_agents::{AgentRegistry, AgentRouter};
-use flowforge_memory::MemoryDb;
 use colored::Colorize;
+use flowforge_agents::{AgentRegistry, AgentRouter};
+use flowforge_core::{FlowForgeConfig, Result};
+use flowforge_memory::MemoryDb;
+use std::collections::HashMap;
 
 pub fn run(task: &str) -> Result<()> {
     let config = FlowForgeConfig::load(&FlowForgeConfig::config_path())?;
@@ -32,7 +32,11 @@ pub fn run(task: &str) -> Result<()> {
 
     let top_5: Vec<_> = results.iter().take(5).collect();
     for (i, result) in top_5.iter().enumerate() {
-        let marker = if i == 0 { "→".green().to_string() } else { " ".to_string() };
+        let marker = if i == 0 {
+            "→".green().to_string()
+        } else {
+            " ".to_string()
+        };
         println!(
             "{} {:<20} {:.0}%  (pattern: {:.0}%, cap: {:.0}%, learned: {:.0}%, priority: {:.0}%)",
             marker,

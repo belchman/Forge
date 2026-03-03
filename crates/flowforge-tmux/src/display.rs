@@ -24,10 +24,7 @@ pub fn render_display(state: &TmuxState) -> String {
     lines.push(format!("├{}┤", "─".repeat(inner)));
 
     // Column headers
-    let header = format!(
-        " {:<12}│ {:<8}│ {}",
-        "Agent", "Status", "Task"
-    );
+    let header = format!(" {:<12}│ {:<8}│ {}", "Agent", "Status", "Task");
     lines.push(format!("│{}│", pad_right(&header, inner)));
 
     // Header underline
@@ -65,16 +62,10 @@ pub fn render_display(state: &TmuxState) -> String {
             let task_display = truncate(task, inner.saturating_sub(24));
 
             // Build the plain version for padding calculation
-            let plain_row = format!(
-                " {:<12}│ {:<8}│ {}",
-                agent_id, plain_status, task_display
-            );
+            let plain_row = format!(" {:<12}│ {:<8}│ {}", agent_id, plain_status, task_display);
 
             // Build the colored version for display
-            let colored_row = format!(
-                " {:<12}│ {:<8}│ {}",
-                agent_id, status_str, task_display
-            );
+            let colored_row = format!(" {:<12}│ {:<8}│ {}", agent_id, status_str, task_display);
 
             let plain_len = plain_row.chars().count();
             let pad_needed = inner.saturating_sub(plain_len);

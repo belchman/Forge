@@ -5,7 +5,11 @@ use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
-#[command(name = "flowforge", about = "Agent orchestration for Claude Code", version)]
+#[command(
+    name = "flowforge",
+    about = "Agent orchestration for Claude Code",
+    version
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -64,12 +68,19 @@ enum Commands {
         #[command(subcommand)]
         action: McpAction,
     },
+    /// Work tracking operations
+    Work {
+        #[command(subcommand)]
+        action: WorkAction,
+    },
 }
 
 #[derive(Subcommand)]
 enum HookEvent {
     PreToolUse,
     PostToolUse,
+    PostToolUseFailure,
+    Notification,
     UserPromptSubmit,
     SessionStart,
     SessionEnd,
@@ -84,15 +95,35 @@ enum HookEvent {
 #[derive(Subcommand)]
 enum MemoryAction {
     /// Get a value by key
-    Get { key: String, #[arg(long, default_value = "default")] namespace: String },
+    Get {
+        key: String,
+        #[arg(long, default_value = "default")]
+        namespace: String,
+    },
     /// Set a key-value pair
-    Set { key: String, value: String, #[arg(long, default_value = "default")] namespace: String },
+    Set {
+        key: String,
+        value: String,
+        #[arg(long, default_value = "default")]
+        namespace: String,
+    },
     /// Delete a key
-    Delete { key: String, #[arg(long, default_value = "default")] namespace: String },
+    Delete {
+        key: String,
+        #[arg(long, default_value = "default")]
+        namespace: String,
+    },
     /// List keys in a namespace
-    List { #[arg(long, default_value = "default")] namespace: String },
+    List {
+        #[arg(long, default_value = "default")]
+        namespace: String,
+    },
     /// Search memory by query
-    Search { query: String, #[arg(long, default_value_t = 5)] limit: usize },
+    Search {
+        query: String,
+        #[arg(long, default_value_t = 5)]
+        limit: usize,
+    },
 }
 
 #[derive(Subcommand)]
@@ -100,7 +131,10 @@ enum SessionAction {
     /// Show current session info
     Current,
     /// List recent sessions
-    List { #[arg(long, default_value_t = 10)] limit: usize },
+    List {
+        #[arg(long, default_value_t = 10)]
+        limit: usize,
+    },
     /// Show session metrics
     Metrics,
 }
@@ -108,9 +142,17 @@ enum SessionAction {
 #[derive(Subcommand)]
 enum LearnAction {
     /// Store a new pattern
-    Store { content: String, #[arg(long, default_value = "general")] category: String },
+    Store {
+        content: String,
+        #[arg(long, default_value = "general")]
+        category: String,
+    },
     /// Search patterns
-    Search { query: String, #[arg(long, default_value_t = 5)] limit: usize },
+    Search {
+        query: String,
+        #[arg(long, default_value_t = 5)]
+        limit: usize,
+    },
     /// Show learning statistics
     Stats,
 }
@@ -143,6 +185,63 @@ enum McpAction {
     Serve,
 }
 
+#[derive(Subcommand)]
+enum WorkAction {
+    /// Create a new work item
+    Create {
+        /// Title of the work item
+        #[arg(long)]
+        title: String,
+        /// Type: task, epic, bug, story, sub-task
+        #[arg(long, default_value = "task")]
+        r#type: String,
+        /// Description
+        #[arg(long)]
+        description: Option<String>,
+        /// Parent work item ID
+        #[arg(long)]
+        parent: Option<String>,
+        /// Priority (0=critical, 1=high, 2=normal, 3=low)
+        #[arg(long, default_value_t = 2)]
+        priority: i32,
+    },
+    /// List work items
+    List {
+        /// Filter by status
+        #[arg(long)]
+        status: Option<String>,
+        /// Filter by type
+        #[arg(long)]
+        r#type: Option<String>,
+    },
+    /// Update a work item's status
+    Update {
+        /// Work item ID (prefix match supported)
+        id: String,
+        /// New status: pending, in_progress, blocked, completed
+        #[arg(long)]
+        status: String,
+    },
+    /// Close a work item
+    Close {
+        /// Work item ID (prefix match supported)
+        id: String,
+    },
+    /// Sync with external backend
+    Sync,
+    /// Show work tracking status
+    Status,
+    /// Show work event audit trail
+    Log {
+        /// Max events to show
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        /// Show events since date (YYYY-MM-DD)
+        #[arg(long)]
+        since: Option<String>,
+    },
+}
+
 fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -156,22 +255,36 @@ fn main() {
     let result = match cli.command {
         Commands::Init { project, global } => commands::init::run(project, global),
         Commands::Hook { event } => match event {
-            HookEvent::PreToolUse => hooks::pre_tool_use::run(),
-            HookEvent::PostToolUse => hooks::post_tool_use::run(),
-            HookEvent::UserPromptSubmit => hooks::user_prompt_submit::run(),
-            HookEvent::SessionStart => hooks::session_start::run(),
-            HookEvent::SessionEnd => hooks::session_end::run(),
-            HookEvent::Stop => hooks::stop::run(),
-            HookEvent::PreCompact => hooks::pre_compact::run(),
-            HookEvent::SubagentStart => hooks::subagent_start::run(),
-            HookEvent::SubagentStop => hooks::subagent_stop::run(),
-            HookEvent::TeammateIdle => hooks::teammate_idle::run(),
-            HookEvent::TaskCompleted => hooks::task_completed::run(),
+            HookEvent::PreToolUse => hooks::run_safe("pre-tool-use", hooks::pre_tool_use::run),
+            HookEvent::PostToolUse => hooks::run_safe("post-tool-use", hooks::post_tool_use::run),
+            HookEvent::PostToolUseFailure => {
+                hooks::run_safe("post-tool-use-failure", hooks::post_tool_use_failure::run)
+            }
+            HookEvent::Notification => hooks::run_safe("notification", hooks::notification::run),
+            HookEvent::UserPromptSubmit => {
+                hooks::run_safe("user-prompt-submit", hooks::user_prompt_submit::run)
+            }
+            HookEvent::SessionStart => hooks::run_safe("session-start", hooks::session_start::run),
+            HookEvent::SessionEnd => hooks::run_safe("session-end", hooks::session_end::run),
+            HookEvent::Stop => hooks::run_safe("stop", hooks::stop::run),
+            HookEvent::PreCompact => hooks::run_safe("pre-compact", hooks::pre_compact::run),
+            HookEvent::SubagentStart => {
+                hooks::run_safe("subagent-start", hooks::subagent_start::run)
+            }
+            HookEvent::SubagentStop => hooks::run_safe("subagent-stop", hooks::subagent_stop::run),
+            HookEvent::TeammateIdle => hooks::run_safe("teammate-idle", hooks::teammate_idle::run),
+            HookEvent::TaskCompleted => {
+                hooks::run_safe("task-completed", hooks::task_completed::run)
+            }
         },
         Commands::Status => commands::status::run(),
         Commands::Memory { action } => match action {
             MemoryAction::Get { key, namespace } => commands::memory::get(&key, &namespace),
-            MemoryAction::Set { key, value, namespace } => commands::memory::set(&key, &value, &namespace),
+            MemoryAction::Set {
+                key,
+                value,
+                namespace,
+            } => commands::memory::set(&key, &value, &namespace),
             MemoryAction::Delete { key, namespace } => commands::memory::delete(&key, &namespace),
             MemoryAction::List { namespace } => commands::memory::list(&namespace),
             MemoryAction::Search { query, limit } => commands::memory::search(&query, limit),
@@ -200,6 +313,29 @@ fn main() {
         },
         Commands::Mcp { action } => match action {
             McpAction::Serve => commands::mcp::serve(),
+        },
+        Commands::Work { action } => match action {
+            WorkAction::Create {
+                title,
+                r#type,
+                description,
+                parent,
+                priority,
+            } => commands::work::create(
+                &r#type,
+                &title,
+                description.as_deref(),
+                parent.as_deref(),
+                priority,
+            ),
+            WorkAction::List { status, r#type } => {
+                commands::work::list(status.as_deref(), r#type.as_deref())
+            }
+            WorkAction::Update { id, status } => commands::work::update(&id, &status),
+            WorkAction::Close { id } => commands::work::close(&id),
+            WorkAction::Sync => commands::work::sync(),
+            WorkAction::Status => commands::work::status(),
+            WorkAction::Log { limit, since } => commands::work::log(limit, since.as_deref()),
         },
     };
 

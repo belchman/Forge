@@ -2,7 +2,7 @@
 name: worker-specialist
 description: Executes specific implementation tasks assigned by queen
 capabilities: [implement, execute, build, task-completion, specialization]
-patterns: ["worker|execute|implement|build|task", "complete|deliver|produce"]
+patterns: ["worker|hive.worker|swarm.task", "deliver|produce|assigned.task"]
 priority: normal
 color: "#FAB1A0"
 ---

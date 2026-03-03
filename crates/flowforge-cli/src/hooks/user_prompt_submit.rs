@@ -1,23 +1,46 @@
+use flowforge_agents::{AgentRegistry, AgentRouter};
 use flowforge_core::hook::{self, ContextOutput, UserPromptSubmitInput};
 use flowforge_core::{FlowForgeConfig, Result};
-use flowforge_agents::{AgentRegistry, AgentRouter};
 use flowforge_memory::MemoryDb;
 use std::collections::HashMap;
 
 pub fn run() -> Result<()> {
     let input: UserPromptSubmitInput = hook::parse_stdin()?;
-    let config = FlowForgeConfig::load(&FlowForgeConfig::config_path())?;
 
+    // Skip routing for very short prompts (A10)
+    if input.prompt.trim().len() < 5 {
+        let output = ContextOutput::none();
+        hook::write_stdout(&output)?;
+        return Ok(());
+    }
+
+    let config = FlowForgeConfig::load(&FlowForgeConfig::config_path())?;
     let mut context_parts: Vec<String> = Vec::new();
+
+    // Single DB connection for the entire hook (A10)
+    let db = if config.hooks.routing || config.hooks.learning {
+        let db_path = config.db_path();
+        if db_path.exists() {
+            MemoryDb::open(&db_path).ok()
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    // Load learned weights once from the shared DB connection (A10)
+    let learned_weights = if let Some(ref db) = db {
+        load_learned_weights_from_db(db)
+    } else {
+        HashMap::new()
+    };
 
     // Route the task to suggested agents
     if config.hooks.routing {
         if let Ok(registry) = AgentRegistry::load(&config.agents) {
             let router = AgentRouter::new(&config.routing);
             let agents: Vec<&_> = registry.list().into_iter().collect();
-
-            // Load learned weights from DB if available
-            let learned_weights = load_learned_weights(&config);
 
             let results = router.route(&input.prompt, &agents, &learned_weights);
 
@@ -51,9 +74,35 @@ pub fn run() -> Result<()> {
         }
     }
 
+    // Inject active work items context (C4)
+    if let Some(ref db) = db {
+        let filter = flowforge_core::WorkFilter {
+            status: Some("in_progress".to_string()),
+            ..Default::default()
+        };
+        if let Ok(active_items) = db.list_work_items(&filter) {
+            if !active_items.is_empty() {
+                let mut work_ctx = String::from("[FlowForge Work] Active items:");
+                for item in active_items.iter().take(5) {
+                    work_ctx.push_str(&format!(
+                        "\n- {} ({}): {}",
+                        item.id.chars().take(8).collect::<String>(),
+                        item.status,
+                        item.title,
+                    ));
+                }
+                context_parts.push(work_ctx);
+            } else if config.work_tracking.require_task {
+                context_parts.push(
+                    "[FlowForge Work] No active work item. Create one with `flowforge work create` or use your task tracker.".to_string()
+                );
+            }
+        }
+    }
+
     // Search FlowForge memory for relevant patterns and stored knowledge
     if config.hooks.learning {
-        if let Ok(db) = MemoryDb::open(&config.db_path()) {
+        if let Some(ref db) = db {
             // Search learned patterns
             if let Ok(patterns) = db.search_patterns_short(&input.prompt, 3) {
                 let relevant: Vec<_> = patterns
@@ -63,7 +112,11 @@ pub fn run() -> Result<()> {
                 if !relevant.is_empty() {
                     let mut pattern_ctx = String::from("[FlowForge Memory] Relevant patterns:");
                     for p in &relevant {
-                        pattern_ctx.push_str(&format!("\n- {} (conf: {:.0}%)", p.content, p.confidence * 100.0));
+                        pattern_ctx.push_str(&format!(
+                            "\n- {} (conf: {:.0}%)",
+                            p.content,
+                            p.confidence * 100.0
+                        ));
                     }
                     context_parts.push(pattern_ctx);
                 }
@@ -80,7 +133,10 @@ pub fn run() -> Result<()> {
                     for p in &relevant {
                         lt_ctx.push_str(&format!(
                             "\n- {} (conf: {:.0}%, used: {}x, success: {})",
-                            p.content, p.confidence * 100.0, p.usage_count, p.success_count
+                            p.content,
+                            p.confidence * 100.0,
+                            p.usage_count,
+                            p.success_count
                         ));
                     }
                     context_parts.push(lt_ctx);
@@ -111,13 +167,11 @@ pub fn run() -> Result<()> {
     Ok(())
 }
 
-fn load_learned_weights(config: &FlowForgeConfig) -> HashMap<(String, String), f64> {
+fn load_learned_weights_from_db(db: &MemoryDb) -> HashMap<(String, String), f64> {
     let mut weights = HashMap::new();
-    if let Ok(db) = MemoryDb::open(&config.db_path()) {
-        if let Ok(all_weights) = db.get_all_routing_weights() {
-            for w in all_weights {
-                weights.insert((w.task_pattern, w.agent_name), w.weight);
-            }
+    if let Ok(all_weights) = db.get_all_routing_weights() {
+        for w in all_weights {
+            weights.insert((w.task_pattern, w.agent_name), w.weight);
         }
     }
     weights

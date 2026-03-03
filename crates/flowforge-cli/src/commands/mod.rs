@@ -1,9 +1,10 @@
-pub mod init;
-pub mod status;
-pub mod memory;
-pub mod session;
-pub mod learn;
 pub mod agent;
-pub mod route;
-pub mod tmux;
+pub mod init;
+pub mod learn;
 pub mod mcp;
+pub mod memory;
+pub mod route;
+pub mod session;
+pub mod status;
+pub mod tmux;
+pub mod work;

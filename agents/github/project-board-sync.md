@@ -2,7 +2,7 @@
 name: project-board-sync
 description: Syncs project board state with actual progress
 capabilities: [project-board, sync, kanban, status-update, automation]
-patterns: ["project.board|kanban|board|sync", "status|automate|column|card"]
+patterns: ["project.board|kanban|board.sync", "board.status|automate.board|column|card"]
 priority: low
 color: "#79B8FF"
 ---

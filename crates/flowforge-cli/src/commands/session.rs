@@ -1,10 +1,16 @@
+use colored::Colorize;
 use flowforge_core::{FlowForgeConfig, Result};
 use flowforge_memory::MemoryDb;
-use colored::Colorize;
 
 fn open_db() -> Result<MemoryDb> {
     let config = FlowForgeConfig::load(&FlowForgeConfig::config_path())?;
-    MemoryDb::open(&config.db_path())
+    let db_path = config.db_path();
+    if !db_path.exists() {
+        return Err(flowforge_core::Error::Config(
+            "FlowForge not initialized. Run `flowforge init --project` first.".to_string(),
+        ));
+    }
+    MemoryDb::open(&db_path)
 }
 
 pub fn current() -> Result<()> {
@@ -33,7 +39,10 @@ pub fn list(limit: usize) -> Result<()> {
         return Ok(());
     }
 
-    println!("{:<10} {:<20} {:<6} {:<6} {}", "ID", "Started", "Edits", "Cmds", "Status");
+    println!(
+        "{:<10} {:<20} {:<6} {:<6} Status",
+        "ID", "Started", "Edits", "Cmds"
+    );
     println!("{}", "─".repeat(60));
 
     for session in &sessions {
@@ -71,8 +80,14 @@ pub fn metrics() -> Result<()> {
     println!("Total commands: {}", total_commands);
 
     if total_sessions > 0 {
-        println!("Avg edits/session:    {:.1}", total_edits as f64 / total_sessions as f64);
-        println!("Avg commands/session: {:.1}", total_commands as f64 / total_sessions as f64);
+        println!(
+            "Avg edits/session:    {:.1}",
+            total_edits as f64 / total_sessions as f64
+        );
+        println!(
+            "Avg commands/session: {:.1}",
+            total_commands as f64 / total_sessions as f64
+        );
     }
 
     Ok(())

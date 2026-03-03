@@ -2,7 +2,7 @@
 name: agent
 description: General goal-oriented agent that breaks goals into actionable steps
 capabilities: [goal-decomposition, planning, execution, tracking, adaptation]
-patterns: ["goal|objective|target|milestone", "achieve|accomplish|reach|attain"]
+patterns: ["goal.plan|objective|set.goal|milestone", "achieve.goal|accomplish|goal.track"]
 priority: normal
 color: "#FF9800"
 ---

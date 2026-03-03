@@ -68,26 +68,59 @@ impl AgentRouter {
             })
             .collect();
 
-        results.sort_by(|a, b| b.confidence.partial_cmp(&a.confidence).unwrap_or(std::cmp::Ordering::Equal));
+        results.sort_by(|a, b| {
+            b.confidence
+                .partial_cmp(&a.confidence)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         results
     }
 
     /// Check agent's regex patterns against the task text.
-    /// Returns 1.0 if any pattern matches, 0.0 otherwise.
+    /// Returns the fraction of patterns that match (0.0 to 1.0).
+    /// Patterns are automatically made case-insensitive. A leading word boundary
+    /// is added to each alternative to prevent mid-word matches (e.g. "sync"
+    /// won't match inside "async"), while allowing suffix variations (e.g.
+    /// "document" matches "documentation").
     fn compute_pattern_score(&self, task: &str, agent: &AgentDef) -> f64 {
+        if agent.patterns.is_empty() {
+            return 0.0;
+        }
+
+        let mut matches = 0usize;
         for pattern_str in &agent.patterns {
-            match Regex::new(pattern_str) {
+            // Add leading word boundary if pattern doesn't already use anchors/boundaries
+            let wrapped = if pattern_str.contains("\\b")
+                || pattern_str.starts_with('^')
+                || pattern_str.ends_with('$')
+            {
+                format!("(?i){pattern_str}")
+            } else {
+                // Wrap each alternative with a leading \b to prevent mid-word matches
+                let bounded = pattern_str
+                    .split('|')
+                    .map(|alt| format!("\\b(?:{alt})"))
+                    .collect::<Vec<_>>()
+                    .join("|");
+                format!("(?i){bounded}")
+            };
+
+            match Regex::new(&wrapped) {
                 Ok(re) => {
                     if re.is_match(task) {
-                        return 1.0;
+                        matches += 1;
                     }
                 }
                 Err(e) => {
-                    warn!("Invalid regex pattern '{}' for agent '{}': {e}", pattern_str, agent.name);
+                    warn!(
+                        "Invalid regex pattern '{}' for agent '{}': {e}",
+                        pattern_str, agent.name
+                    );
                 }
             }
         }
-        0.0
+
+        matches as f64 / agent.patterns.len() as f64
     }
 
     /// Count keyword overlap between task words and agent capabilities.
@@ -106,7 +139,9 @@ impl AgentRouter {
             .filter(|cap| {
                 let cap_lower = cap.to_lowercase();
                 // Check if the capability appears as a word or substring in the task
-                task_words.iter().any(|word| word.contains(&cap_lower) || cap_lower.contains(word))
+                task_words
+                    .iter()
+                    .any(|word| word.contains(&cap_lower) || cap_lower.contains(word))
             })
             .count();
 
@@ -170,13 +205,26 @@ mod tests {
     #[test]
     fn test_route_pattern_match() {
         let router = AgentRouter::default();
-        let agent = make_agent("tester", &["test"], &["test.*", "spec.*"], Priority::Normal);
+        // Single pattern — should score 1.0 when it matches
+        let agent = make_agent("tester", &["test"], &["test"], Priority::Normal);
         let agents: Vec<&AgentDef> = vec![&agent];
         let learned = HashMap::new();
 
         let results = router.route("test the login flow", &agents, &learned);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].breakdown.pattern_score, 1.0);
+    }
+
+    #[test]
+    fn test_route_partial_pattern_match() {
+        let router = AgentRouter::default();
+        // Two patterns — only "test" matches, "spec" doesn't → 0.5
+        let agent = make_agent("tester", &["test"], &["test", "spec"], Priority::Normal);
+        let agents: Vec<&AgentDef> = vec![&agent];
+        let learned = HashMap::new();
+
+        let results = router.route("test the login flow", &agents, &learned);
+        assert!((results[0].breakdown.pattern_score - 0.5).abs() < 0.01);
     }
 
     #[test]
@@ -191,9 +239,36 @@ mod tests {
     }
 
     #[test]
+    fn test_route_word_boundary() {
+        let router = AgentRouter::default();
+        // "sync" should NOT match "async" — leading \b prevents mid-word matches
+        let sync_agent = make_agent("syncer", &["sync"], &["sync"], Priority::Normal);
+        let agents: Vec<&AgentDef> = vec![&sync_agent];
+        let learned = HashMap::new();
+
+        let results = router.route("fix async handler", &agents, &learned);
+        assert_eq!(results[0].breakdown.pattern_score, 0.0);
+
+        // But should match when "sync" is a standalone word
+        let results = router.route("sync the database", &agents, &learned);
+        assert_eq!(results[0].breakdown.pattern_score, 1.0);
+
+        // "document" should match "documentation" (leading boundary, suffix allowed)
+        let doc_agent = make_agent("doc", &[], &["document"], Priority::Normal);
+        let agents: Vec<&AgentDef> = vec![&doc_agent];
+        let results = router.route("write documentation", &agents, &learned);
+        assert_eq!(results[0].breakdown.pattern_score, 1.0);
+    }
+
+    #[test]
     fn test_route_capability_score() {
         let router = AgentRouter::default();
-        let agent = make_agent("reviewer", &["rust", "review", "lint"], &[], Priority::Normal);
+        let agent = make_agent(
+            "reviewer",
+            &["rust", "review", "lint"],
+            &[],
+            Priority::Normal,
+        );
         let agents: Vec<&AgentDef> = vec![&agent];
         let learned = HashMap::new();
 

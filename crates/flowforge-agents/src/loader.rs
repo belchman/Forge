@@ -3,6 +3,8 @@ use std::path::Path;
 use flowforge_core::{AgentDef, AgentSource, Error, Result};
 use tracing::warn;
 
+include!(concat!(env!("OUT_DIR"), "/builtin_agents.rs"));
+
 /// Parse a single agent definition from markdown content with YAML frontmatter.
 ///
 /// The expected format is:
@@ -48,7 +50,7 @@ pub fn parse_agent_def(content: &str) -> Result<AgentDef> {
     Ok(agent_def)
 }
 
-/// Load all `.md` agent definitions from a directory.
+/// Load all `.md` agent definitions from a directory, recursively walking subdirectories.
 /// Non-parseable files are warned about and skipped.
 pub fn load_from_dir(path: &Path, source: AgentSource) -> Result<Vec<AgentDef>> {
     if !path.is_dir() {
@@ -56,13 +58,30 @@ pub fn load_from_dir(path: &Path, source: AgentSource) -> Result<Vec<AgentDef>> 
     }
 
     let mut agents = Vec::new();
+    load_from_dir_recursive(path, &source, &mut agents)?;
+    Ok(agents)
+}
 
-    let entries = std::fs::read_dir(path)
-        .map_err(|e| Error::Agent(format!("Failed to read agent directory {}: {e}", path.display())))?;
+fn load_from_dir_recursive(
+    path: &Path,
+    source: &AgentSource,
+    agents: &mut Vec<AgentDef>,
+) -> Result<()> {
+    let entries = std::fs::read_dir(path).map_err(|e| {
+        Error::Agent(format!(
+            "Failed to read agent directory {}: {e}",
+            path.display()
+        ))
+    })?;
 
     for entry in entries {
-        let entry = entry.map_err(|e| Error::Io(e))?;
+        let entry = entry.map_err(Error::Io)?;
         let file_path = entry.path();
+
+        if file_path.is_dir() {
+            load_from_dir_recursive(&file_path, source, agents)?;
+            continue;
+        }
 
         if file_path.extension().and_then(|e| e.to_str()) != Some("md") {
             continue;
@@ -87,20 +106,27 @@ pub fn load_from_dir(path: &Path, source: AgentSource) -> Result<Vec<AgentDef>> 
         }
     }
 
-    Ok(agents)
+    Ok(())
 }
 
 /// Load built-in agent definitions compiled into the binary.
 ///
-/// To add a built-in agent, use include_str! like so:
-/// ```ignore
-/// let content = include_str!("../agents/code-review.md");
-/// agents.push(parse_agent_def(content).expect("built-in agent must be valid"));
-/// ```
+/// These agents are embedded at build time from the `agents/` directory
+/// via `include_str!` in the build script.
 pub fn load_builtin() -> Vec<AgentDef> {
-    // Built-in agent .md files will be added separately.
-    // When they exist, load them here with include_str!.
-    Vec::new()
+    let mut agents = Vec::new();
+    for (name, content) in builtin_agents() {
+        match parse_agent_def(content) {
+            Ok(mut agent) => {
+                agent.source = AgentSource::BuiltIn;
+                agents.push(agent);
+            }
+            Err(e) => {
+                warn!("Failed to parse built-in agent '{}': {e}", name);
+            }
+        }
+    }
+    agents
 }
 
 #[cfg(test)]

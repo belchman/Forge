@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use flowforge_core::{AgentDef, AgentSource, FlowForgeConfig, Result};
 use flowforge_core::config::AgentsConfig;
+use flowforge_core::{AgentDef, AgentSource, FlowForgeConfig, Result};
 use tracing::debug;
 
 use crate::loader;
@@ -43,7 +43,11 @@ impl AgentRegistry {
         if config.load_global {
             let global_dir = FlowForgeConfig::global_dir().join("agents");
             let globals = loader::load_from_dir(&global_dir, AgentSource::Global)?;
-            debug!("Loaded {} global agents from {}", globals.len(), global_dir.display());
+            debug!(
+                "Loaded {} global agents from {}",
+                globals.len(),
+                global_dir.display()
+            );
             for agent in globals {
                 registry.agents.insert(agent.name.clone(), agent);
             }
@@ -58,7 +62,11 @@ impl AgentRegistry {
 
             for dir in &project_dirs {
                 let project_agents = loader::load_from_dir(dir, AgentSource::Project)?;
-                debug!("Loaded {} project agents from {}", project_agents.len(), dir.display());
+                debug!(
+                    "Loaded {} project agents from {}",
+                    project_agents.len(),
+                    dir.display()
+                );
                 for agent in project_agents {
                     registry.agents.insert(agent.name.clone(), agent);
                 }
@@ -156,7 +164,11 @@ mod tests {
     #[test]
     fn test_registry_search() {
         let mut reg = AgentRegistry::new();
-        reg.insert(make_agent("code-review", "Reviews code", &["rust", "review"]));
+        reg.insert(make_agent(
+            "code-review",
+            "Reviews code",
+            &["rust", "review"],
+        ));
         reg.insert(make_agent("test-runner", "Runs tests", &["testing"]));
         reg.insert(make_agent("deployer", "Deploys services", &["deploy"]));
 

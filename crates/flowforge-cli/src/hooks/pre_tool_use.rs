@@ -1,5 +1,6 @@
 use flowforge_core::hook::{self, PreToolUseInput, PreToolUseOutput};
-use flowforge_core::Result;
+use flowforge_core::{FlowForgeConfig, Result};
+use flowforge_memory::MemoryDb;
 
 pub fn run() -> Result<()> {
     let input: PreToolUseInput = hook::parse_stdin()?;
@@ -14,8 +15,24 @@ pub fn run() -> Result<()> {
                 return Ok(());
             }
         }
+
+        // Track command count for non-blocked Bash commands
+        let _ = increment_command_count();
     }
 
     // Allow the tool use (exit 0, no output needed for allow)
+    Ok(())
+}
+
+fn increment_command_count() -> Result<()> {
+    let config = FlowForgeConfig::load(&FlowForgeConfig::config_path())?;
+    let db_path = config.db_path();
+    if !db_path.exists() {
+        return Ok(());
+    }
+    let db = MemoryDb::open(&db_path)?;
+    if let Some(session) = db.get_current_session()? {
+        db.increment_session_commands(&session.id)?;
+    }
     Ok(())
 }

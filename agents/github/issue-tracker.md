@@ -2,7 +2,7 @@
 name: issue-tracker
 description: Tracks and manages GitHub issues
 capabilities: [issue, track, label, milestone, triage]
-patterns: ["issue|bug.report|feature.request|ticket", "track|label|milestone|triage"]
+patterns: ["github.issue|bug.report|feature.request|ticket", "triage|label|milestone|issue.track"]
 priority: normal
 color: "#0366D6"
 ---

@@ -1,7 +1,7 @@
-use flowforge_core::{FlowForgeConfig, Result, TmuxState};
-use flowforge_tmux::{TmuxManager, TmuxStateManager};
-use flowforge_tmux::display::render_display;
 use colored::Colorize;
+use flowforge_core::{FlowForgeConfig, Result, TmuxState};
+use flowforge_tmux::display::render_display;
+use flowforge_tmux::{TmuxManager, TmuxStateManager};
 
 pub fn start() -> Result<()> {
     let config = FlowForgeConfig::load(&FlowForgeConfig::config_path())?;
@@ -13,7 +13,10 @@ pub fn start() -> Result<()> {
     }
 
     if manager.session_exists() {
-        println!("tmux session '{}' already running", config.tmux.session_name);
+        println!(
+            "tmux session '{}' already running",
+            config.tmux.session_name
+        );
         return Ok(());
     }
 
@@ -29,7 +32,11 @@ pub fn start() -> Result<()> {
     });
 
     manager.start(&state)?;
-    println!("{} tmux monitor started (session: {})", "✓".green(), config.tmux.session_name);
+    println!(
+        "{} tmux monitor started (session: {})",
+        "✓".green(),
+        config.tmux.session_name
+    );
     println!("Attach with: tmux attach -t {}", config.tmux.session_name);
 
     Ok(())

@@ -1,11 +1,11 @@
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use chrono::Utc;
 use uuid::Uuid;
 
 use flowforge_core::config::PatternsConfig;
-use flowforge_core::{LongTermPattern, Result, ShortTermPattern};
+use flowforge_core::{LongTermPattern, PatternMatch, PatternTier, Result, ShortTermPattern};
 
 use crate::db::MemoryDb;
 use crate::embedding::Embedding;
@@ -14,7 +14,7 @@ use crate::hnsw::HnswIndex;
 /// Cached HNSW index with the vector count it was built from.
 struct CachedIndex {
     index: HnswIndex,
-    id_to_source: HashMap<i64, String>,
+    id_to_source: HashMap<i64, (String, PatternTier)>,
     built_from_count: usize,
 }
 
@@ -94,21 +94,33 @@ impl<'a> PatternStore<'a> {
                 };
 
                 self.db.store_pattern_long(&long_pattern)?;
+                // Update vector source_type from pattern_short → pattern_long
+                if let Some(eid) = p.embedding_id {
+                    self.db.update_vector_source_type(eid, "pattern_long")?;
+                }
                 self.db.delete_pattern_short(&p.id)?;
                 promoted += 1;
             }
         }
 
+        // Invalidate HNSW cache since tier mappings changed
+        if promoted > 0 {
+            *self.hnsw_cache.borrow_mut() = None;
+        }
+
         Ok(promoted)
     }
 
-    /// Run consolidation: promotion, decay, expiration, and deduplication.
+    /// Run consolidation: promotion, decay, expiration, deduplication, and migration.
     pub fn consolidate(&self) -> Result<()> {
         // 1. Promote eligible patterns
         self.promote_eligible()?;
 
-        // 2. Apply confidence decay (A6)
+        // 2. Apply confidence decay
         self.apply_decay()?;
+
+        // 2b. Enforce long_term_max
+        self.enforce_long_term_max()?;
 
         // 3. Expire old short-term patterns (TTL-based)
         self.expire_short_term()?;
@@ -116,25 +128,71 @@ impl<'a> PatternStore<'a> {
         // 4. Deduplicate similar patterns (using stored vectors)
         self.deduplicate()?;
 
+        // 5. Re-embed all vectors if embedding version changed
+        self.migrate_embeddings()?;
+
         Ok(())
     }
 
-    /// Search patterns using HNSW index when >50 patterns exist, else brute-force. (A5)
-    pub fn search_patterns(&self, query: &str, k: usize) -> Result<Vec<(ShortTermPattern, f32)>> {
+    /// Search all patterns (both tiers) using HNSW when >50 total, else brute-force.
+    pub fn search_all_patterns(&self, query: &str, k: usize) -> Result<Vec<PatternMatch>> {
         let query_vec = self.embedding.embed(query);
-        let short_count = self.db.count_patterns_short()? as usize;
+        let total =
+            self.db.count_patterns_short()? as usize + self.db.count_patterns_long()? as usize;
 
-        if short_count > 50 {
+        if total > 50 {
             self.search_with_hnsw(&query_vec, k)
         } else {
             self.search_brute_force(&query_vec, k)
         }
     }
 
-    /// Ensure the HNSW cache is built (or rebuilt if vector count changed).
+    /// Fetch a pattern by ID and tier, returning a PatternMatch if found.
+    fn fetch_pattern_match(
+        &self,
+        id: &str,
+        tier: PatternTier,
+        similarity: f32,
+    ) -> Option<PatternMatch> {
+        match tier {
+            PatternTier::Short => {
+                if let Ok(Some(p)) = self.db.get_pattern_short(id) {
+                    Some(PatternMatch {
+                        id: p.id,
+                        content: p.content,
+                        category: p.category,
+                        confidence: p.confidence,
+                        usage_count: p.usage_count,
+                        tier: PatternTier::Short,
+                        similarity,
+                    })
+                } else {
+                    None
+                }
+            }
+            PatternTier::Long => {
+                if let Ok(Some(p)) = self.db.get_pattern_long(id) {
+                    Some(PatternMatch {
+                        id: p.id,
+                        content: p.content,
+                        category: p.category,
+                        confidence: p.confidence,
+                        usage_count: p.usage_count,
+                        tier: PatternTier::Long,
+                        similarity,
+                    })
+                } else {
+                    None
+                }
+            }
+        }
+    }
+
+    /// Ensure the HNSW cache is built from BOTH tiers (or rebuilt if vector count changed).
     fn ensure_hnsw_cache(&self) -> Result<()> {
-        let vectors = self.db.get_vectors_for_source("pattern_short")?;
-        let current_count = vectors.len();
+        let short_vecs = self.db.get_vectors_for_source("pattern_short")?;
+        let long_vecs = self.db.get_vectors_for_source("pattern_long")?;
+        let current_count = short_vecs.len() + long_vecs.len();
 
         let needs_rebuild = {
             let cache = self.hnsw_cache.borrow();
@@ -145,15 +203,20 @@ impl<'a> PatternStore<'a> {
         };
 
         if needs_rebuild {
-            if vectors.is_empty() {
+            if current_count == 0 {
                 *self.hnsw_cache.borrow_mut() = None;
                 return Ok(());
             }
 
-            let mut id_to_source: HashMap<i64, String> = HashMap::new();
+            let mut id_to_source: HashMap<i64, (String, PatternTier)> = HashMap::new();
             let mut points: Vec<(i64, Vec<f32>)> = Vec::new();
-            for (db_id, source_id, vector) in &vectors {
-                id_to_source.insert(*db_id, source_id.clone());
+
+            for (db_id, source_id, vector) in &short_vecs {
+                id_to_source.insert(*db_id, (source_id.clone(), PatternTier::Short));
+                points.push((*db_id, vector.clone()));
+            }
+            for (db_id, source_id, vector) in &long_vecs {
+                id_to_source.insert(*db_id, (source_id.clone(), PatternTier::Long));
                 points.push((*db_id, vector.clone()));
             }
 
@@ -170,12 +233,8 @@ impl<'a> PatternStore<'a> {
         Ok(())
     }
 
-    /// Search using cached HNSW index built from stored vectors.
-    fn search_with_hnsw(
-        &self,
-        query_vec: &[f32],
-        k: usize,
-    ) -> Result<Vec<(ShortTermPattern, f32)>> {
+    /// Search using cached HNSW index built from stored vectors (both tiers).
+    fn search_with_hnsw(&self, query_vec: &[f32], k: usize) -> Result<Vec<PatternMatch>> {
         self.ensure_hnsw_cache()?;
 
         let cache = self.hnsw_cache.borrow();
@@ -188,10 +247,10 @@ impl<'a> PatternStore<'a> {
 
         let mut scored = Vec::new();
         for (db_id, distance) in results {
-            if let Some(pattern_id) = cached.id_to_source.get(&db_id) {
-                if let Ok(Some(pattern)) = self.db.get_pattern_short(pattern_id) {
-                    let similarity = 1.0 - distance; // distance = 1 - cosine_similarity
-                    scored.push((pattern, similarity));
+            if let Some((pattern_id, tier)) = cached.id_to_source.get(&db_id) {
+                let similarity = 1.0 - distance;
+                if let Some(m) = self.fetch_pattern_match(pattern_id, *tier, similarity) {
+                    scored.push(m);
                 }
             }
         }
@@ -199,27 +258,33 @@ impl<'a> PatternStore<'a> {
         Ok(scored)
     }
 
-    /// Brute-force search for small pattern sets (<= 50).
-    fn search_brute_force(
-        &self,
-        query_vec: &[f32],
-        k: usize,
-    ) -> Result<Vec<(ShortTermPattern, f32)>> {
-        let all_patterns = self.db.get_all_patterns_short()?;
+    /// Brute-force search using stored vectors across both tiers.
+    fn search_brute_force(&self, query_vec: &[f32], k: usize) -> Result<Vec<PatternMatch>> {
+        let short_vecs = self.db.get_vectors_for_source("pattern_short")?;
+        let long_vecs = self.db.get_vectors_for_source("pattern_long")?;
 
-        let mut scored: Vec<(ShortTermPattern, f32)> = all_patterns
-            .into_iter()
-            .map(|p| {
-                let p_vec = self.embedding.embed(&p.content);
-                let sim = Embedding::cosine_similarity(query_vec, &p_vec);
-                (p, sim)
-            })
-            .collect();
+        let mut scored: Vec<(String, PatternTier, f32)> = Vec::new();
 
-        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        for (_, source_id, vec) in &short_vecs {
+            let sim = Embedding::cosine_similarity(query_vec, vec);
+            scored.push((source_id.clone(), PatternTier::Short, sim));
+        }
+        for (_, source_id, vec) in &long_vecs {
+            let sim = Embedding::cosine_similarity(query_vec, vec);
+            scored.push((source_id.clone(), PatternTier::Long, sim));
+        }
+
+        scored.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
         scored.truncate(k);
 
-        Ok(scored)
+        let mut results = Vec::new();
+        for (id, tier, similarity) in scored {
+            if let Some(m) = self.fetch_pattern_match(&id, tier, similarity) {
+                results.push(m);
+            }
+        }
+
+        Ok(results)
     }
 
     /// Record usage of a pattern (increments count and confidence).
@@ -318,7 +383,7 @@ impl<'a> PatternStore<'a> {
             .map(|(_, source_id, vec)| (source_id, vec))
             .collect();
 
-        let mut to_remove = Vec::new();
+        let mut to_remove: HashSet<usize> = HashSet::new();
         let threshold = self.config.dedup_similarity_threshold as f32;
 
         for i in 0..patterns.len() {
@@ -344,9 +409,9 @@ impl<'a> PatternStore<'a> {
                         || (patterns[j].confidence == patterns[i].confidence
                             && patterns[j].usage_count < patterns[i].usage_count)
                     {
-                        to_remove.push(j);
+                        to_remove.insert(j);
                     } else {
-                        to_remove.push(i);
+                        to_remove.insert(i);
                         break;
                     }
                 }
@@ -359,6 +424,68 @@ impl<'a> PatternStore<'a> {
             self.db.delete_vectors_for_source("pattern_short", &p.id)?;
         }
 
+        Ok(())
+    }
+
+    /// Re-embed all stored vectors if the embedding algorithm version has changed.
+    fn migrate_embeddings(&self) -> Result<()> {
+        use crate::embedding::EMBEDDING_VERSION;
+
+        let current = EMBEDDING_VERSION.to_string();
+        let stored = self.db.get_meta("embedding_version")?;
+
+        if stored.as_deref() == Some(current.as_str()) {
+            return Ok(());
+        }
+
+        // Re-embed short-term patterns
+        for p in &self.db.get_all_patterns_short()? {
+            let vec = self.embedding.embed(&p.content);
+            self.db.delete_vectors_for_source("pattern_short", &p.id)?;
+            self.db.store_vector("pattern_short", &p.id, &vec)?;
+        }
+
+        // Re-embed long-term patterns
+        for p in &self.db.get_all_patterns_long()? {
+            let vec = self.embedding.embed(&p.content);
+            self.db.delete_vectors_for_source("pattern_long", &p.id)?;
+            self.db.store_vector("pattern_long", &p.id, &vec)?;
+        }
+
+        // Re-embed routing vectors
+        let routing_vecs = self.db.get_vectors_for_source("routing")?;
+        for (_, source_id, _) in &routing_vecs {
+            // source_id is "task_pattern::agent_name" — extract the task pattern
+            if let Some((task_pattern, _)) = source_id.split_once("::") {
+                let vec = self.embedding.embed(task_pattern);
+                self.db.delete_vectors_for_source("routing", source_id)?;
+                self.db.store_vector("routing", source_id, &vec)?;
+            }
+        }
+
+        self.db.set_meta("embedding_version", &current)?;
+        Ok(())
+    }
+
+    /// Enforce long_term_max by pruning dormant then lowest-confidence patterns.
+    fn enforce_long_term_max(&self) -> Result<()> {
+        let count = self.db.count_patterns_long()? as usize;
+        if count <= self.config.long_term_max {
+            return Ok(());
+        }
+        let excess = count - self.config.long_term_max;
+
+        // First pass: remove dormant patterns (confidence at 0.05 floor)
+        let deleted = self.db.delete_dormant_long_patterns(excess)? as usize;
+
+        // Second pass: if still over limit, remove lowest-confidence
+        if deleted < excess {
+            let remaining = excess - deleted;
+            self.db.delete_lowest_confidence_long(remaining)?;
+        }
+
+        // Clean up orphaned vectors
+        self.db.cleanup_orphaned_long_vectors()?;
         Ok(())
     }
 
@@ -400,9 +527,10 @@ mod tests {
             .store_short_term("python uses pip for packages", "python")
             .unwrap();
 
-        let results = store.search_patterns("cargo rust", 2).unwrap();
+        let results = store.search_all_patterns("cargo rust", 2).unwrap();
         assert!(!results.is_empty());
-        assert!(results[0].0.content.contains("cargo"));
+        assert!(results[0].content.contains("cargo"));
+        assert_eq!(results[0].tier, PatternTier::Short);
     }
 
     #[test]
@@ -487,5 +615,204 @@ mod tests {
 
         // Should run all phases without error
         store.consolidate().unwrap();
+    }
+
+    #[test]
+    fn test_search_finds_promoted_patterns() {
+        let db = setup_db();
+        let config = PatternsConfig {
+            promotion_min_usage: 1,
+            promotion_min_confidence: 0.4,
+            ..PatternsConfig::default()
+        };
+        let store = PatternStore::new(&db, &config);
+
+        let id = store
+            .store_short_term("deploy kubernetes service", "devops")
+            .unwrap();
+        store.record_usage(&id).unwrap();
+
+        // Promote to long-term
+        let promoted = store.promote_eligible().unwrap();
+        assert_eq!(promoted, 1);
+        assert_eq!(db.count_patterns_short().unwrap(), 0);
+        assert_eq!(db.count_patterns_long().unwrap(), 1);
+
+        // Search should still find it, now as Long tier
+        let results = store.search_all_patterns("deploy kubernetes", 5).unwrap();
+        assert!(!results.is_empty());
+        assert_eq!(results[0].tier, PatternTier::Long);
+        assert!(results[0].content.contains("kubernetes"));
+    }
+
+    #[test]
+    fn test_search_all_combines_tiers() {
+        let db = setup_db();
+        let config = PatternsConfig {
+            promotion_min_usage: 1,
+            promotion_min_confidence: 0.4,
+            ..PatternsConfig::default()
+        };
+        let store = PatternStore::new(&db, &config);
+
+        // Store 3 short-term patterns
+        store
+            .store_short_term("fix rust compilation error", "rust")
+            .unwrap();
+        store
+            .store_short_term("debug rust test failure", "rust")
+            .unwrap();
+        let id3 = store
+            .store_short_term("optimize rust build time", "rust")
+            .unwrap();
+
+        // Promote one to long-term
+        store.record_usage(&id3).unwrap();
+        store.promote_eligible().unwrap();
+
+        assert_eq!(db.count_patterns_short().unwrap(), 2);
+        assert_eq!(db.count_patterns_long().unwrap(), 1);
+
+        // Search should return results from both tiers
+        let results = store.search_all_patterns("rust", 5).unwrap();
+        assert_eq!(results.len(), 3);
+
+        let has_short = results.iter().any(|m| m.tier == PatternTier::Short);
+        let has_long = results.iter().any(|m| m.tier == PatternTier::Long);
+        assert!(has_short, "Expected short-term results");
+        assert!(has_long, "Expected long-term results");
+    }
+
+    #[test]
+    fn test_enforce_long_term_max() {
+        let db = setup_db();
+        let config = PatternsConfig {
+            promotion_min_usage: 1,
+            promotion_min_confidence: 0.4,
+            long_term_max: 3,
+            ..PatternsConfig::default()
+        };
+        let store = PatternStore::new(&db, &config);
+
+        // Store and promote 6 patterns (exceeds max of 3)
+        for i in 0..6 {
+            let id = store
+                .store_short_term(&format!("pattern number {i}"), "test")
+                .unwrap();
+            store.record_usage(&id).unwrap();
+        }
+        store.promote_eligible().unwrap();
+        assert_eq!(db.count_patterns_long().unwrap(), 6);
+
+        // Enforce max — should prune down to 3
+        store.enforce_long_term_max().unwrap();
+        assert!(db.count_patterns_long().unwrap() <= 3);
+    }
+
+    #[test]
+    fn test_migrate_embeddings() {
+        let db = setup_db();
+        let config = PatternsConfig::default();
+        let store = PatternStore::new(&db, &config);
+
+        // Store some patterns
+        store
+            .store_short_term("test migration pattern", "test")
+            .unwrap();
+        store
+            .store_short_term("another test pattern", "test")
+            .unwrap();
+
+        // Set meta to current version — migration should be a no-op
+        use crate::embedding::EMBEDDING_VERSION;
+        db.set_meta("embedding_version", &EMBEDDING_VERSION.to_string())
+            .unwrap();
+
+        // Should succeed without re-embedding (version matches)
+        store.migrate_embeddings().unwrap();
+
+        // Force stale version
+        db.set_meta("embedding_version", "0").unwrap();
+
+        // Should re-embed all vectors
+        store.migrate_embeddings().unwrap();
+
+        // Version should now be updated
+        let version = db.get_meta("embedding_version").unwrap();
+        assert_eq!(version, Some(EMBEDDING_VERSION.to_string()));
+
+        // Vectors should still exist and search should work
+        let results = store.search_all_patterns("test migration", 5).unwrap();
+        assert!(!results.is_empty());
+    }
+
+    #[test]
+    fn test_hnsw_cache_invalidated_after_promotion() {
+        let db = setup_db();
+        let config = PatternsConfig {
+            promotion_min_usage: 1,
+            promotion_min_confidence: 0.4,
+            ..PatternsConfig::default()
+        };
+        let store = PatternStore::new(&db, &config);
+
+        // Store enough patterns to trigger HNSW (>50)
+        for i in 0..55 {
+            store
+                .store_short_term(&format!("hnsw test pattern {i}"), "test")
+                .unwrap();
+        }
+
+        // First search builds the HNSW cache
+        let results1 = store.search_all_patterns("hnsw test pattern 0", 5).unwrap();
+        assert!(!results1.is_empty());
+
+        // Promote pattern 0 — should invalidate cache
+        let patterns = db.get_all_patterns_short().unwrap();
+        let p0 = patterns
+            .iter()
+            .find(|p| p.content == "hnsw test pattern 0")
+            .unwrap();
+        store.record_usage(&p0.id).unwrap();
+        store.promote_eligible().unwrap();
+
+        // Search again — cache should rebuild, promoted pattern should appear as Long
+        let results2 = store.search_all_patterns("hnsw test pattern 0", 5).unwrap();
+        assert!(!results2.is_empty());
+        assert_eq!(
+            results2[0].tier,
+            PatternTier::Long,
+            "Promoted pattern should be Long tier after cache rebuild"
+        );
+    }
+
+    #[test]
+    fn test_dedup_catches_similar_patterns() {
+        let db = setup_db();
+        let config = PatternsConfig {
+            dedup_similarity_threshold: 0.88,
+            ..PatternsConfig::default()
+        };
+        let store = PatternStore::new(&db, &config);
+
+        // Store two very similar patterns (same words, slight reorder)
+        store
+            .store_short_term("use cargo build for rust compilation", "rust")
+            .unwrap();
+        store
+            .store_short_term("use cargo build for rust compilation tasks", "rust")
+            .unwrap();
+
+        assert_eq!(db.count_patterns_short().unwrap(), 2);
+
+        // Run dedup
+        store.deduplicate().unwrap();
+
+        // Should have removed one (they share almost all n-grams)
+        let remaining = db.count_patterns_short().unwrap();
+        assert!(
+            remaining <= 1,
+            "Expected dedup to remove near-duplicate, got {remaining} remaining"
+        );
     }
 }

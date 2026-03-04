@@ -411,7 +411,7 @@ fn default_decay_rate() -> f64 {
     0.005
 }
 fn default_dedup_threshold() -> f64 {
-    0.95
+    0.88
 }
 fn default_tmux_session() -> String {
     "flowforge".to_string()

@@ -936,18 +936,20 @@ impl ToolRegistry {
         match Self::load_config().and_then(|config| {
             let db = MemoryDb::open(&config.db_path())?;
             let store = PatternStore::new(&db, &config.patterns);
-            store.search_patterns(query, limit)
+            store.search_all_patterns(query, limit)
         }) {
             Ok(results) => {
                 let patterns: Vec<Value> = results
                     .iter()
-                    .map(|(p, _score)| {
+                    .map(|m| {
                         json!({
-                            "id": p.id,
-                            "content": p.content,
-                            "category": p.category,
-                            "confidence": p.confidence,
-                            "usage_count": p.usage_count,
+                            "id": m.id,
+                            "content": m.content,
+                            "category": m.category,
+                            "confidence": m.confidence,
+                            "usage_count": m.usage_count,
+                            "tier": format!("{:?}", m.tier),
+                            "similarity": m.similarity,
                         })
                     })
                     .collect();

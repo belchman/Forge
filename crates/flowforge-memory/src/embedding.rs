@@ -1,7 +1,12 @@
 use xxhash_rust::xxh3::xxh3_64;
 
-/// Hash-based deterministic embeddings using character n-gram feature hashing.
-/// Not semantic, but effective for pattern similarity matching.
+/// Embedding version — increment when the embedding algorithm changes.
+/// Used to trigger re-embedding of stored vectors on next consolidation.
+pub const EMBEDDING_VERSION: u32 = 2;
+
+/// Hash-based deterministic embeddings using character and word n-gram feature hashing.
+/// Combines character bigrams (captures subword patterns) with word unigrams and bigrams
+/// (captures semantic-level token overlap).
 pub struct Embedding {
     dim: usize,
 }
@@ -30,13 +35,31 @@ impl Embedding {
             vector[idx] += sign;
         }
 
-        // Bigrams
+        // Character bigrams
         for pair in chars.windows(2) {
             let bigram = format!("{}{}", pair[0], pair[1]);
             let hash = xxh3_64(bigram.as_bytes());
             let idx = (hash as usize) % self.dim;
             let sign = if (hash >> 32) & 1 == 0 { 1.0 } else { -1.0 };
-            vector[idx] += sign * 1.5; // Bigrams weighted higher
+            vector[idx] += sign * 1.5;
+        }
+
+        // Word unigrams (weight 2.0) — captures token-level semantics
+        let words: Vec<&str> = text_lower.split_whitespace().collect();
+        for word in &words {
+            let hash = xxh3_64(word.as_bytes());
+            let idx = (hash as usize) % self.dim;
+            let sign = if (hash >> 32) & 1 == 0 { 1.0 } else { -1.0 };
+            vector[idx] += sign * 2.0;
+        }
+
+        // Word bigrams (weight 3.0) — captures phrase-level patterns
+        for pair in words.windows(2) {
+            let bigram = format!("{} {}", pair[0], pair[1]);
+            let hash = xxh3_64(bigram.as_bytes());
+            let idx = (hash as usize) % self.dim;
+            let sign = if (hash >> 32) & 1 == 0 { 1.0 } else { -1.0 };
+            vector[idx] += sign * 3.0;
         }
 
         // L2 normalize
@@ -130,5 +153,31 @@ mod tests {
         let emb = Embedding::new(128);
         let vec = emb.embed("");
         assert!(vec.iter().all(|&v| v == 0.0));
+    }
+
+    #[test]
+    fn test_word_ngrams_boost_similarity() {
+        let emb = Embedding::new(128);
+        // These share words "fix" and "bug" but differ in "auth" vs "authentication"
+        let v1 = emb.embed("fix auth bug");
+        let v2 = emb.embed("fix authentication bug");
+        let sim = Embedding::cosine_similarity(&v1, &v2);
+        // Word unigrams "fix" and "bug" should make these meaningfully similar
+        assert!(
+            sim > 0.4,
+            "Expected similarity > 0.4 for shared-word phrases, got {sim}"
+        );
+    }
+
+    #[test]
+    fn test_word_ngrams_unrelated_low_similarity() {
+        let emb = Embedding::new(128);
+        let v1 = emb.embed("fix authentication bug");
+        let v2 = emb.embed("deploy kubernetes service");
+        let sim = Embedding::cosine_similarity(&v1, &v2);
+        assert!(
+            sim < 0.5,
+            "Expected similarity < 0.5 for unrelated phrases, got {sim}"
+        );
     }
 }

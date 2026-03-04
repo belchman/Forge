@@ -151,10 +151,10 @@ impl<'a> TrajectoryJudge<'a> {
         Ok(())
     }
 
-    /// Check if task description matches known successful patterns.
+    /// Check if task description matches known successful patterns (both tiers).
     fn pattern_match_score(&self, task_description: &str) -> Result<f64> {
         let store = PatternStore::new(self.db, self.config);
-        let results = store.search_patterns(task_description, 3)?;
+        let results = store.search_all_patterns(task_description, 3)?;
 
         if results.is_empty() {
             return Ok(0.5); // Neutral if no matches
@@ -163,8 +163,8 @@ impl<'a> TrajectoryJudge<'a> {
         // Average similarity of top matches that are trajectory patterns
         let trajectory_matches: Vec<f32> = results
             .iter()
-            .filter(|(p, _)| p.category == "trajectory")
-            .map(|(_, sim)| *sim)
+            .filter(|m| m.category == "trajectory")
+            .map(|m| m.similarity)
             .collect();
 
         if trajectory_matches.is_empty() {

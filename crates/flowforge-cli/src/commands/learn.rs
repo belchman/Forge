@@ -1,5 +1,5 @@
 use colored::Colorize;
-use flowforge_core::{FlowForgeConfig, Result};
+use flowforge_core::{FlowForgeConfig, PatternTier, Result};
 use flowforge_memory::{MemoryDb, PatternStore};
 
 pub fn store(content: &str, category: &str) -> Result<()> {
@@ -20,24 +20,34 @@ pub fn store(content: &str, category: &str) -> Result<()> {
 pub fn search(query: &str, limit: usize) -> Result<()> {
     let config = FlowForgeConfig::load(&FlowForgeConfig::config_path())?;
     let db = MemoryDb::open(&config.db_path())?;
+    let store = PatternStore::new(&db, &config.patterns);
 
-    let short = db.search_patterns_short(query, limit)?;
-    let long = db.search_patterns_long(query, limit)?;
+    let results = store.search_all_patterns(query, limit)?;
 
-    if short.is_empty() && long.is_empty() {
+    if results.is_empty() {
         println!("No patterns found for '{query}'");
         return Ok(());
     }
+
+    let long: Vec<_> = results
+        .iter()
+        .filter(|m| m.tier == PatternTier::Long)
+        .collect();
+    let short: Vec<_> = results
+        .iter()
+        .filter(|m| m.tier == PatternTier::Short)
+        .collect();
 
     if !long.is_empty() {
         println!("{}", "Long-term patterns:".bold());
         for p in &long {
             println!(
-                "  [{}] {} (conf: {:.0}%, used: {}x)",
+                "  [{}] {} (conf: {:.0}%, used: {}x, sim: {:.0}%)",
                 p.category.cyan(),
                 p.content,
                 p.confidence * 100.0,
-                p.usage_count
+                p.usage_count,
+                p.similarity * 100.0
             );
         }
     }
@@ -46,11 +56,12 @@ pub fn search(query: &str, limit: usize) -> Result<()> {
         println!("{}", "Short-term patterns:".bold());
         for p in &short {
             println!(
-                "  [{}] {} (conf: {:.0}%, used: {}x)",
+                "  [{}] {} (conf: {:.0}%, used: {}x, sim: {:.0}%)",
                 p.category.cyan(),
                 p.content,
                 p.confidence * 100.0,
-                p.usage_count
+                p.usage_count,
+                p.similarity * 100.0
             );
         }
     }

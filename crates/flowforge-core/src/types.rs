@@ -277,6 +277,25 @@ pub struct LongTermPattern {
     pub embedding_id: Option<i64>,
 }
 
+/// Which tier a pattern match came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PatternTier {
+    Short,
+    Long,
+}
+
+/// A unified pattern match result from either tier with similarity score.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PatternMatch {
+    pub id: String,
+    pub content: String,
+    pub category: String,
+    pub confidence: f64,
+    pub usage_count: u32,
+    pub tier: PatternTier,
+    pub similarity: f32,
+}
+
 /// Routing weight for learning
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RoutingWeight {

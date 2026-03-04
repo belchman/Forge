@@ -46,8 +46,9 @@ pub fn run() -> Result<()> {
     }
 
     // Load learned weights once from the shared DB connection (A10)
+    // Also pre-compute similarity-based matches for generalization (Fix 5)
     let learned_weights = if let Some(ref db) = db {
-        load_learned_weights_from_db(db)
+        load_learned_weights_from_db(db, &prompt)
     } else {
         HashMap::new()
     };
@@ -292,12 +293,41 @@ fn build_routing_context(db: &MemoryDb) -> Option<RoutingContext> {
     Some(ctx)
 }
 
-fn load_learned_weights_from_db(db: &MemoryDb) -> HashMap<(String, String), f64> {
+fn load_learned_weights_from_db(db: &MemoryDb, prompt: &str) -> HashMap<(String, String), f64> {
     let mut weights = HashMap::new();
+
+    // 1. Load exact matches (existing behavior)
     if let Ok(all_weights) = db.get_all_routing_weights() {
         for w in all_weights {
             weights.insert((w.task_pattern, w.agent_name), w.weight);
         }
     }
+
+    // 2. Pre-compute similarity-based matches for generalization (Fix 5)
+    // Embed the incoming prompt, search routing vectors, and inject similar weights
+    let embedding = flowforge_memory::embedding::Embedding::default();
+    let query_vec = embedding.embed(prompt);
+
+    if let Ok(routing_vecs) = db.get_vectors_for_source("routing") {
+        for (_, source_id, vec) in &routing_vecs {
+            let sim = flowforge_memory::embedding::Embedding::cosine_similarity(&query_vec, vec);
+            if sim > 0.7 {
+                // source_id is "task_pattern::agent_name"
+                if let Some((task_pattern, agent_name)) = source_id.split_once("::") {
+                    // Look up the actual routing weight for this pair
+                    let key = (task_pattern.to_string(), agent_name.to_string());
+                    if let Some(&original_weight) = weights.get(&key) {
+                        // Insert with the prompt text as key so router's substring match hits
+                        let generalized_key = (prompt.to_string(), agent_name.to_string());
+                        // Scale weight by similarity (only insert if not already present)
+                        weights
+                            .entry(generalized_key)
+                            .or_insert_with(|| original_weight * sim as f64);
+                    }
+                }
+            }
+        }
+    }
+
     weights
 }

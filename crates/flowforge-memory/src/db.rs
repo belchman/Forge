@@ -100,6 +100,11 @@ impl MemoryDb {
                 created_at TEXT
             );
 
+            CREATE TABLE IF NOT EXISTS flowforge_meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS routing_weights (
                 task_pattern TEXT,
                 agent_name TEXT,
@@ -764,6 +769,13 @@ impl MemoryDb {
         Ok(())
     }
 
+    pub fn delete_pattern_long(&self, id: &str) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM patterns_long WHERE id = ?1", params![id])
+            .map_err(|e| Error::Sqlite(e.to_string()))?;
+        Ok(())
+    }
+
     pub fn count_patterns_short(&self) -> Result<u64> {
         self.conn
             .query_row("SELECT COUNT(*) FROM patterns_short", [], |row| row.get(0))
@@ -1096,6 +1108,29 @@ impl MemoryDb {
             .map_err(|e| Error::Sqlite(e.to_string()))
     }
 
+    // ── Meta Key-Value ──
+
+    pub fn get_meta(&self, key: &str) -> Result<Option<String>> {
+        self.conn
+            .query_row(
+                "SELECT value FROM flowforge_meta WHERE key = ?1",
+                params![key],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| Error::Sqlite(e.to_string()))
+    }
+
+    pub fn set_meta(&self, key: &str, value: &str) -> Result<()> {
+        self.conn
+            .execute(
+                "INSERT OR REPLACE INTO flowforge_meta (key, value) VALUES (?1, ?2)",
+                params![key, value],
+            )
+            .map_err(|e| Error::Sqlite(e.to_string()))?;
+        Ok(())
+    }
+
     // ── HNSW Entries ──
 
     pub fn store_vector(&self, source_type: &str, source_id: &str, vector: &[f32]) -> Result<i64> {
@@ -1134,6 +1169,58 @@ impl MemoryDb {
             )
             .map_err(|e| Error::Sqlite(e.to_string()))?;
         Ok(())
+    }
+
+    pub fn update_vector_source_type(&self, id: i64, new_source_type: &str) -> Result<()> {
+        self.conn
+            .execute(
+                "UPDATE hnsw_entries SET source_type = ?1 WHERE id = ?2",
+                params![new_source_type, id],
+            )
+            .map_err(|e| Error::Sqlite(e.to_string()))?;
+        Ok(())
+    }
+
+    pub fn cleanup_orphaned_long_vectors(&self) -> Result<()> {
+        self.conn
+            .execute(
+                "DELETE FROM hnsw_entries WHERE source_type = 'pattern_long'
+                 AND source_id NOT IN (SELECT id FROM patterns_long)",
+                [],
+            )
+            .map_err(|e| Error::Sqlite(e.to_string()))?;
+        Ok(())
+    }
+
+    pub fn delete_dormant_long_patterns(&self, limit: usize) -> Result<u64> {
+        let deleted = self
+            .conn
+            .execute(
+                "DELETE FROM patterns_long WHERE id IN (
+                    SELECT id FROM patterns_long
+                    WHERE confidence <= 0.05
+                    ORDER BY last_used ASC
+                    LIMIT ?1
+                )",
+                params![limit],
+            )
+            .map_err(|e| Error::Sqlite(e.to_string()))?;
+        Ok(deleted as u64)
+    }
+
+    pub fn delete_lowest_confidence_long(&self, limit: usize) -> Result<u64> {
+        let deleted = self
+            .conn
+            .execute(
+                "DELETE FROM patterns_long WHERE id IN (
+                    SELECT id FROM patterns_long
+                    ORDER BY confidence ASC, last_used ASC
+                    LIMIT ?1
+                )",
+                params![limit],
+            )
+            .map_err(|e| Error::Sqlite(e.to_string()))?;
+        Ok(deleted as u64)
     }
 
     // ── Work Items ──

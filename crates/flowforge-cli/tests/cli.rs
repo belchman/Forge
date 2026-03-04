@@ -171,7 +171,7 @@ fn test_statusline_empty_stdin() {
         .write_stdin("{}")
         .assert()
         .success()
-        .stdout(predicate::str::contains("\u{2B22}"));
+        .stdout(predicate::str::contains("FlowForge"));
 }
 
 #[test]
@@ -191,13 +191,11 @@ fn test_statusline_legend() {
         .arg("--legend")
         .assert()
         .success()
-        .stdout(predicate::str::contains("Statusline Legend"))
-        .stdout(predicate::str::contains("SESSION"))
-        .stdout(predicate::str::contains("TRAJECTORY"))
-        .stdout(predicate::str::contains("TRUST"))
-        .stdout(predicate::str::contains("AGENTS"))
-        .stdout(predicate::str::contains("WORK ITEMS"))
-        .stdout(predicate::str::contains("WARNINGS"));
+        .stdout(predicate::str::contains("Dashboard Legend"))
+        .stdout(predicate::str::contains("HEADER LINE"))
+        .stdout(predicate::str::contains("LEARNING LINE"))
+        .stdout(predicate::str::contains("SWARM LINE"))
+        .stdout(predicate::str::contains("ARCHITECTURE LINE"));
 }
 
 // ── Session subcommands ──

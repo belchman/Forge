@@ -4,4 +4,5 @@ Cargo.lock
 *.swo
 .DS_Store
 .flowforge/
+.fastembed_cache/
 project-local/

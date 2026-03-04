@@ -1,6 +1,6 @@
 use flowforge_core::hook::{self, PreCompactInput};
 use flowforge_core::{FlowForgeConfig, Result};
-use flowforge_memory::MemoryDb;
+use flowforge_memory::{MemoryDb, PatternStore};
 
 pub fn run() -> Result<()> {
     let v = hook::parse_stdin_value()?;
@@ -16,6 +16,10 @@ pub fn run() -> Result<()> {
 
     if db_path.exists() {
         if let Ok(db) = MemoryDb::open(&db_path) {
+            // Run consolidation: promotes patterns, dedup, decay, re-cluster
+            let store = PatternStore::new(&db, &config.patterns);
+            let _ = store.consolidate();
+
             // Include current session stats
             if let Ok(Some(session)) = db.get_current_session() {
                 guidance.push(format!(

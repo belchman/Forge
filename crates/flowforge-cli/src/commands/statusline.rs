@@ -5,6 +5,7 @@ use flowforge_memory::MemoryDb;
 const SEP: &str = "\u{2502}"; // │
 const HSEP: &str = "\u{2500}"; // ─
 
+#[allow(clippy::print_literal, clippy::format_in_format_args)]
 pub fn run() -> Result<()> {
     // Read stdin (Claude Code pipes JSON context)
     let stdin_data: serde_json::Value = {
@@ -20,9 +21,12 @@ pub fn run() -> Result<()> {
     let model = stdin_data
         .get("model")
         .and_then(|v| {
-            v.get("display_name")
-                .and_then(|d| d.as_str())
-                .or_else(|| v.get("id").and_then(|id| id.as_str()))
+            // Handle both string and object formats
+            v.as_str().or_else(|| {
+                v.get("display_name")
+                    .and_then(|d| d.as_str())
+                    .or_else(|| v.get("id").and_then(|id| id.as_str()))
+            })
         })
         .unwrap_or("");
 
@@ -107,9 +111,15 @@ pub fn run() -> Result<()> {
         }
     }
 
-    // Model
+    // Model (shorten common Claude model IDs)
     if !model.is_empty() {
-        header = format!("{}  {}  {}", header, SEP.dimmed(), model.bright_magenta());
+        let short_model = shorten_model(model);
+        header = format!(
+            "{}  {}  {}",
+            header,
+            SEP.dimmed(),
+            short_model.bright_magenta()
+        );
     }
 
     // Context remaining
@@ -480,6 +490,7 @@ pub fn run() -> Result<()> {
 }
 
 /// Print the legend explaining all statusline symbols.
+#[allow(clippy::print_literal)]
 pub fn print_legend() -> Result<()> {
     println!("{}", "FlowForge Dashboard Legend".bold().cyan());
     println!("{}", HSEP.repeat(53).dimmed());
@@ -701,6 +712,21 @@ fn get_agent_summary(db: &MemoryDb) -> (usize, usize, Vec<String>) {
 }
 
 /// Shorten agent type names for compact display
+fn shorten_model(model: &str) -> String {
+    match model {
+        m if m.contains("opus-4-6") || m.contains("opus-4.6") => "op4.6".to_string(),
+        m if m.contains("sonnet-4-6") || m.contains("sonnet-4.6") => "sn4.6".to_string(),
+        m if m.contains("haiku-4-5") || m.contains("haiku-4.5") => "hk4.5".to_string(),
+        m if m.contains("opus-4-5") || m.contains("opus-4.5") => "op4.5".to_string(),
+        m if m.contains("sonnet-4-5") || m.contains("sonnet-4.5") => "sn4.5".to_string(),
+        m if m.contains("opus-4-0") || m.contains("opus-4") => "op4".to_string(),
+        m if m.contains("sonnet-4-0") || m.contains("sonnet-4") => "sn4".to_string(),
+        m if m.contains("sonnet-3-5") || m.contains("sonnet-3.5") => "sn3.5".to_string(),
+        m if m.contains("haiku-3-5") || m.contains("haiku-3.5") => "hk3.5".to_string(),
+        m => m.to_string(),
+    }
+}
+
 fn shorten_agent_name(agent_type: &str) -> String {
     match agent_type {
         "general-purpose" | "general" => "gen".to_string(),

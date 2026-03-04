@@ -213,6 +213,12 @@ pub fn run() -> Result<()> {
                     }
                     context_parts.push(ctx);
                 }
+
+                // Record usage on all injected patterns so they accumulate
+                // toward the promotion threshold (3x usage, 60% confidence)
+                for m in proven.iter().chain(recent.iter()) {
+                    let _ = store.record_usage(&m.id);
+                }
             }
 
             // Search key-value memory for relevant stored knowledge

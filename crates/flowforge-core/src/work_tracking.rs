@@ -580,6 +580,29 @@ fn sync_from_claude_tasks(db: &dyn WorkDb, config: &WorkTrackingConfig) -> Resul
     Ok(synced)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_detect_backend_explicit() {
+        let config = WorkTrackingConfig {
+            backend: "kanbus".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(detect_backend(&config), "kanbus");
+    }
+
+    #[test]
+    fn test_detect_backend_auto_fallback() {
+        // When no external backend files exist, auto should fall back to
+        // either claude_tasks or flowforge depending on environment
+        let config = WorkTrackingConfig::default();
+        let result = detect_backend(&config);
+        assert!(!result.is_empty());
+    }
+}
+
 /// Push FlowForge-only items to the active external backend.
 /// Items with backend="flowforge" get synced outward on session end.
 /// After pushing, updates the item's backend field so it won't be pushed again.

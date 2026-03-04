@@ -42,15 +42,49 @@ pub fn exec_plugin_tool(
         let _ = stdin.write_all(json.as_bytes());
     }
 
-    // Wait with timeout using a thread
+    // Enforce timeout: spawn a killer thread that terminates the child if it exceeds the deadline
     let timeout = Duration::from_millis(timeout_ms);
+    let child_id = child.id();
+    let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+
+    std::thread::spawn(move || {
+        if done_rx.recv_timeout(timeout).is_err() {
+            // Timeout expired — kill the child process
+            #[cfg(unix)]
+            {
+                unsafe {
+                    libc::kill(child_id as i32, libc::SIGKILL);
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                // Best-effort on non-Unix; wait_with_output will still return
+                let _ = child_id;
+            }
+        }
+    });
+
     let output = match child.wait_with_output() {
-        Ok(o) => o,
-        Err(e) => return Err(crate::Error::Plugin(format!("Plugin command failed: {e}"))),
+        Ok(o) => {
+            let _ = done_tx.send(()); // Cancel the killer thread
+            o
+        }
+        Err(e) => {
+            let _ = done_tx.send(());
+            return Err(crate::Error::Plugin(format!("Plugin command failed: {e}")));
+        }
     };
 
-    // Check timeout (approximate — we rely on the OS here)
-    let _ = timeout; // used conceptually
+    // Detect if killed by timeout (signal 9 on Unix)
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if output.status.signal() == Some(9) {
+            return Err(crate::Error::Plugin(format!(
+                "Plugin command timed out after {timeout_ms}ms"
+            )));
+        }
+    }
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);

@@ -131,3 +131,67 @@ pub fn load_all_plugins(config: &PluginsConfig) -> Result<Vec<LoadedPlugin>> {
 
     Ok(plugins)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn test_load_plugin_valid_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("plugin.toml"),
+            r#"
+[plugin]
+name = "test-plugin"
+description = "A test plugin"
+
+[[tools]]
+name = "hello"
+description = "Says hello"
+command = "echo hello"
+"#,
+        )
+        .unwrap();
+
+        let plugin = load_plugin(dir.path()).unwrap();
+        assert_eq!(plugin.manifest.plugin.name, "test-plugin");
+        assert_eq!(plugin.manifest.tools.len(), 1);
+        assert_eq!(plugin.manifest.tools[0].name, "hello");
+        assert_eq!(plugin.manifest.tools[0].timeout, 5000); // default
+    }
+
+    #[test]
+    fn test_load_plugin_missing_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = load_plugin(dir.path());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_is_plugin_enabled_default() {
+        let config = PluginsConfig::default();
+        assert!(is_plugin_enabled("any-plugin", &config));
+    }
+
+    #[test]
+    fn test_is_plugin_enabled_disabled() {
+        let config = PluginsConfig {
+            enabled: vec![],
+            disabled: vec!["blocked".to_string()],
+        };
+        assert!(!is_plugin_enabled("blocked", &config));
+        assert!(is_plugin_enabled("other", &config));
+    }
+
+    #[test]
+    fn test_is_plugin_enabled_explicit_list() {
+        let config = PluginsConfig {
+            enabled: vec!["allowed".to_string()],
+            disabled: vec![],
+        };
+        assert!(is_plugin_enabled("allowed", &config));
+        assert!(!is_plugin_enabled("other", &config));
+    }
+}

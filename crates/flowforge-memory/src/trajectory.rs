@@ -175,3 +175,171 @@ impl<'a> TrajectoryJudge<'a> {
         Ok(avg as f64)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+    use flowforge_core::config::PatternsConfig;
+    use flowforge_core::trajectory::{
+        StepOutcome, Trajectory, TrajectoryStatus, TrajectoryVerdict,
+    };
+    use flowforge_core::types::SessionInfo;
+    use std::path::Path;
+
+    fn test_db() -> MemoryDb {
+        MemoryDb::open(Path::new(":memory:")).unwrap()
+    }
+
+    fn setup_session(db: &MemoryDb) {
+        db.create_session(&SessionInfo {
+            id: "sess-1".to_string(),
+            started_at: Utc::now(),
+            ended_at: None,
+            cwd: "/tmp".to_string(),
+            edits: 0,
+            commands: 0,
+            summary: None,
+            transcript_path: None,
+        })
+        .unwrap();
+    }
+
+    fn create_test_trajectory(db: &MemoryDb, id: &str) {
+        db.create_trajectory(&Trajectory {
+            id: id.to_string(),
+            session_id: "sess-1".to_string(),
+            work_item_id: None,
+            agent_name: None,
+            task_description: Some("test task".to_string()),
+            status: TrajectoryStatus::Recording,
+            started_at: Utc::now(),
+            ended_at: None,
+            verdict: None,
+            confidence: None,
+            metadata: None,
+            embedding_id: None,
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn test_judge_empty_trajectory() {
+        let db = test_db();
+        setup_session(&db);
+        create_test_trajectory(&db, "traj-1");
+        db.end_trajectory("traj-1", TrajectoryStatus::Completed)
+            .unwrap();
+
+        let config = PatternsConfig::default();
+        let judge = TrajectoryJudge::new(&db, &config);
+        let result = judge.judge("traj-1").unwrap();
+        assert_eq!(result.verdict, TrajectoryVerdict::Failure);
+        assert_eq!(result.confidence, 0.0);
+        assert!(result.reason.contains("no steps"));
+    }
+
+    #[test]
+    fn test_judge_all_success_steps() {
+        let db = test_db();
+        setup_session(&db);
+        create_test_trajectory(&db, "traj-1");
+
+        for tool in &["Read", "Edit", "Write", "Grep", "Bash"] {
+            db.record_trajectory_step("traj-1", tool, None, StepOutcome::Success, None)
+                .unwrap();
+        }
+        db.end_trajectory("traj-1", TrajectoryStatus::Completed)
+            .unwrap();
+
+        let config = PatternsConfig::default();
+        let judge = TrajectoryJudge::new(&db, &config);
+        let result = judge.judge("traj-1").unwrap();
+        assert_eq!(result.verdict, TrajectoryVerdict::Success);
+        assert!(result.confidence > 0.5);
+    }
+
+    #[test]
+    fn test_judge_mixed_steps() {
+        let db = test_db();
+        setup_session(&db);
+        create_test_trajectory(&db, "traj-1");
+
+        // 3 success + 2 failure = 0.6 ratio → Partial (> 0.5 but not > 0.8)
+        for _ in 0..3 {
+            db.record_trajectory_step("traj-1", "Read", None, StepOutcome::Success, None)
+                .unwrap();
+        }
+        for _ in 0..2 {
+            db.record_trajectory_step("traj-1", "Bash", None, StepOutcome::Failure, None)
+                .unwrap();
+        }
+        db.end_trajectory("traj-1", TrajectoryStatus::Completed)
+            .unwrap();
+
+        let config = PatternsConfig::default();
+        let judge = TrajectoryJudge::new(&db, &config);
+        let result = judge.judge("traj-1").unwrap();
+        assert_eq!(result.verdict, TrajectoryVerdict::Partial);
+    }
+
+    #[test]
+    fn test_judge_all_failure_steps() {
+        let db = test_db();
+        setup_session(&db);
+        create_test_trajectory(&db, "traj-1");
+
+        for _ in 0..5 {
+            db.record_trajectory_step("traj-1", "Bash", None, StepOutcome::Failure, None)
+                .unwrap();
+        }
+        db.end_trajectory("traj-1", TrajectoryStatus::Completed)
+            .unwrap();
+
+        let config = PatternsConfig::default();
+        let judge = TrajectoryJudge::new(&db, &config);
+        let result = judge.judge("traj-1").unwrap();
+        assert_eq!(result.verdict, TrajectoryVerdict::Failure);
+    }
+
+    #[test]
+    fn test_distill_creates_pattern() {
+        let db = test_db();
+        setup_session(&db);
+        create_test_trajectory(&db, "traj-1");
+
+        for tool in &["Read", "Edit", "Bash"] {
+            db.record_trajectory_step("traj-1", tool, None, StepOutcome::Success, None)
+                .unwrap();
+        }
+        db.end_trajectory("traj-1", TrajectoryStatus::Completed)
+            .unwrap();
+
+        let config = PatternsConfig::default();
+        let judge = TrajectoryJudge::new(&db, &config);
+
+        // Judge first to set verdict to Success
+        let result = judge.judge("traj-1").unwrap();
+        assert_eq!(result.verdict, TrajectoryVerdict::Success);
+
+        // Now distill
+        let pattern = judge.distill("traj-1").unwrap();
+        assert!(pattern.is_some());
+        let content = pattern.unwrap();
+        assert!(content.contains("test task"));
+        assert!(content.contains("Read"));
+        assert!(content.contains("Edit"));
+        assert!(content.contains("Bash"));
+    }
+
+    #[test]
+    fn test_consolidate_runs() {
+        let db = test_db();
+        setup_session(&db);
+
+        let config = PatternsConfig::default();
+        let judge = TrajectoryJudge::new(&db, &config);
+        // Should not error on empty DB
+        judge.consolidate().unwrap();
+    }
+}

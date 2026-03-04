@@ -21,8 +21,6 @@ struct CompiledRule {
     regex: Regex,
     action: GateAction,
     scope: crate::types::RuleScope,
-    #[allow(dead_code)]
-    risk_level: RiskLevel,
     description: String,
 }
 
@@ -45,7 +43,6 @@ impl GuidanceEngine {
                 regex,
                 action: rule.action,
                 scope: rule.scope,
-                risk_level: rule.risk_level,
                 description: rule.description.clone(),
             });
         }
@@ -386,5 +383,120 @@ impl GuidanceEngine {
                 .and_then(|f| f.to_str())
                 .map(|f| f.to_lowercase() == pattern_lower)
                 .unwrap_or(false)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::GuidanceConfig;
+    use crate::types::{GateAction, GuidanceRule, RiskLevel, RuleScope};
+    use serde_json::json;
+
+    fn default_engine() -> GuidanceEngine {
+        GuidanceEngine::from_config(&GuidanceConfig::default()).unwrap()
+    }
+
+    #[test]
+    fn test_destructive_ops_gate_blocks_rm_rf() {
+        let engine = default_engine();
+        let input = json!({"command": "rm -rf /"});
+        let (action, reason, _) = engine.evaluate("Bash", &input, 0.0);
+        assert_eq!(action, GateAction::Deny);
+        assert!(reason.contains("destructive_ops"));
+    }
+
+    #[test]
+    fn test_destructive_ops_gate_allows_safe_command() {
+        let engine = default_engine();
+        let input = json!({"command": "ls -la"});
+        let (action, _, _) = engine.evaluate("Bash", &input, 0.0);
+        assert_eq!(action, GateAction::Allow);
+    }
+
+    #[test]
+    fn test_secrets_gate_detects_aws_key() {
+        let engine = default_engine();
+        let input = json!({"content": "AKIAIOSFODNN7EXAMPLE"});
+        let (action, reason, _) = engine.evaluate("Write", &input, 0.0);
+        assert_eq!(action, GateAction::Deny);
+        assert!(reason.contains("secrets"));
+    }
+
+    #[test]
+    fn test_secrets_gate_allows_normal_text() {
+        let engine = default_engine();
+        let input = json!({"content": "Hello world"});
+        let (action, _, _) = engine.evaluate("Write", &input, 0.0);
+        assert_eq!(action, GateAction::Allow);
+    }
+
+    #[test]
+    fn test_file_scope_gate_blocks_protected_path() {
+        let engine = default_engine();
+        let input = json!({"file_path": "/project/.env"});
+        let (action, reason, _) = engine.evaluate("Write", &input, 0.0);
+        assert_eq!(action, GateAction::Deny);
+        assert!(reason.contains("file_scope"));
+    }
+
+    #[test]
+    fn test_file_scope_gate_allows_normal_file() {
+        let engine = default_engine();
+        let input = json!({"file_path": "/project/src/main.rs"});
+        let (action, _, _) = engine.evaluate("Write", &input, 0.0);
+        assert_eq!(action, GateAction::Allow);
+    }
+
+    #[test]
+    fn test_custom_rule_deny() {
+        let config = GuidanceConfig {
+            custom_rules: vec![GuidanceRule {
+                id: "no-npm".to_string(),
+                pattern: r"npm\s+install".to_string(),
+                action: GateAction::Deny,
+                scope: RuleScope::Command,
+                risk_level: RiskLevel::Medium,
+                description: "No npm install".to_string(),
+                enabled: true,
+            }],
+            ..Default::default()
+        };
+        let engine = GuidanceEngine::from_config(&config).unwrap();
+        let input = json!({"command": "npm install foo"});
+        let (action, _, rule_id) = engine.evaluate("Bash", &input, 0.0);
+        assert_eq!(action, GateAction::Deny);
+        assert_eq!(rule_id, Some("no-npm".to_string()));
+    }
+
+    #[test]
+    fn test_trust_relaxation_promotes_ask_to_allow() {
+        let engine = default_engine();
+        // git reset --hard triggers Ask at High risk
+        let input = json!({"command": "git reset --hard HEAD"});
+        let (action_low_trust, _, _) = engine.evaluate("Bash", &input, 0.0);
+        assert_eq!(action_low_trust, GateAction::Deny); // High risk → Deny
+
+        // git force push is also Deny, so let's test with diff_size which produces Ask
+        let mut config = GuidanceConfig::default();
+        config.max_diff_lines = 10;
+        let engine = GuidanceEngine::from_config(&config).unwrap();
+        let big_content = "line\n".repeat(50);
+        let input = json!({"content": big_content});
+        let (action_low, _, _) = engine.evaluate("Write", &input, 0.0);
+        assert_eq!(action_low, GateAction::Ask);
+        let (action_high, _, _) = engine.evaluate("Write", &input, 0.9);
+        assert_eq!(action_high, GateAction::Allow); // Trust relaxation
+    }
+
+    #[test]
+    fn test_diff_size_gate() {
+        let mut config = GuidanceConfig::default();
+        config.max_diff_lines = 5;
+        let engine = GuidanceEngine::from_config(&config).unwrap();
+        let input = json!({"content": "a\nb\nc\nd\ne\nf\ng\nh"});
+        let (action, reason, _) = engine.evaluate("Write", &input, 0.0);
+        assert_eq!(action, GateAction::Ask);
+        assert!(reason.contains("diff_size"));
     }
 }

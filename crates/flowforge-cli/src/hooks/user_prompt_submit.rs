@@ -5,13 +5,8 @@ use flowforge_memory::MemoryDb;
 use std::collections::HashMap;
 
 pub fn run() -> Result<()> {
-    let _v = hook::parse_stdin_value()?;
-    // TEMPORARY: bare minimum to test if hook config is accepted
-    ContextOutput::none().write()?;
-    return Ok(());
-
-    #[allow(unreachable_code)]
-    let input = UserPromptSubmitInput::from_value(&_v)?;
+    let v = hook::parse_stdin_value()?;
+    let input = UserPromptSubmitInput::from_value(&v)?;
 
     let prompt = match input.prompt {
         Some(ref p) if p.trim().len() >= 5 => p.clone(),

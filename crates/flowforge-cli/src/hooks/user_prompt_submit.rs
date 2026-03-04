@@ -7,7 +7,7 @@ use std::collections::HashMap;
 pub fn run() -> Result<()> {
     let _v = hook::parse_stdin_value()?;
     // TEMPORARY: bare minimum to test if hook config is accepted
-    hook::write_stdout(&ContextOutput::none())?;
+    ContextOutput::none().write()?;
     return Ok(());
 
     #[allow(unreachable_code)]
@@ -17,8 +17,7 @@ pub fn run() -> Result<()> {
         Some(ref p) if p.trim().len() >= 5 => p.clone(),
         _ => {
             // No prompt or too short — nothing to route
-            let output = ContextOutput::none();
-            hook::write_stdout(&output)?;
+            ContextOutput::none().write()?;
             return Ok(());
         }
     };
@@ -235,11 +234,9 @@ pub fn run() -> Result<()> {
     }
 
     if context_parts.is_empty() {
-        let output = ContextOutput::none();
-        hook::write_stdout(&output)?;
+        ContextOutput::none().write()?;
     } else {
-        let output = ContextOutput::with_context(context_parts.join("\n\n"));
-        hook::write_stdout(&output)?;
+        ContextOutput::with_context(context_parts.join("\n\n")).write()?;
     }
 
     Ok(())

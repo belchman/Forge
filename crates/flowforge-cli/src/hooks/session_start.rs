@@ -6,6 +6,6 @@ pub fn run() -> Result<()> {
     let v = hook::parse_stdin_value()?;
     let _input = SessionStartInput::from_value(&v)?;
     let output = ContextOutput::with_context("[FlowForge] Ready.".to_string());
-    hook::write_stdout(&output)?;
+    output.write()?;
     Ok(())
 }

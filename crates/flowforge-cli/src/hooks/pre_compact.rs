@@ -46,7 +46,7 @@ pub fn run() -> Result<()> {
     guidance.push("- Use `flowforge session current` to check session state.".to_string());
 
     let output = flowforge_core::hook::ContextOutput::with_context(guidance.join("\n"));
-    hook::write_stdout(&output)?;
+    output.write()?;
 
     Ok(())
 }

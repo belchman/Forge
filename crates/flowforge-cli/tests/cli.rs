@@ -346,7 +346,7 @@ fn test_hook_user_prompt_submit_claude_code_payload() {
         )
         .assert()
         .success()
-        .stdout(predicate::str::contains("hookSpecificOutput"));
+        .stdout(predicate::str::is_empty());
 }
 
 #[test]
@@ -364,7 +364,7 @@ fn test_hook_session_start_claude_code_payload() {
         )
         .assert()
         .success()
-        .stdout(predicate::str::contains("hookSpecificOutput"));
+        .stdout(predicate::str::contains("[FlowForge] Ready."));
 }
 
 #[test]
@@ -416,7 +416,7 @@ fn test_hook_pre_compact_claude_code_payload() {
         )
         .assert()
         .success()
-        .stdout(predicate::str::contains("hookSpecificOutput"));
+        .stdout(predicate::str::contains("FlowForge Compaction Guidance"));
 }
 
 #[test]
@@ -508,6 +508,92 @@ fn test_hook_task_completed_claude_code_payload() {
         )
         .assert()
         .success();
+}
+
+// ── Context hook output format (plain text, no JSON wrapper) ──
+
+#[test]
+fn test_hook_session_start_outputs_plain_text_not_json() {
+    // Claude Code context hooks must output plain text, not JSON.
+    // The old format {"hookSpecificOutput":{}} caused UserPromptSubmit hook errors.
+    flowforge()
+        .args(["hook", "session-start"])
+        .write_stdin(
+            r#"{
+                "session_id": "test-session",
+                "transcript_path": "/tmp/test-transcript.jsonl",
+                "cwd": "/tmp/flowforge-test",
+                "hook_event_name": "SessionStart",
+                "source": "resume"
+            }"#,
+        )
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("[FlowForge] Ready."))
+        .stdout(predicate::str::contains("hookSpecificOutput").not())
+        .stdout(predicate::str::starts_with("{").not());
+}
+
+#[test]
+fn test_hook_user_prompt_submit_no_context_outputs_nothing() {
+    // When no context to inject, stdout must be empty (not empty JSON).
+    // Any JSON output causes Claude Code to report a hook error.
+    flowforge()
+        .args(["hook", "user-prompt-submit"])
+        .write_stdin(
+            r#"{
+                "session_id": "test-session",
+                "transcript_path": "/tmp/test-transcript.jsonl",
+                "cwd": "/tmp/flowforge-test",
+                "permission_mode": "bypassPermissions",
+                "hook_event_name": "UserPromptSubmit",
+                "prompt": "fix the login bug"
+            }"#,
+        )
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::is_empty());
+}
+
+#[test]
+fn test_hook_pre_compact_outputs_plain_text_not_json() {
+    flowforge()
+        .args(["hook", "pre-compact"])
+        .write_stdin(
+            r#"{
+                "session_id": "test-session",
+                "transcript_path": "/tmp/test-transcript.jsonl",
+                "cwd": "/tmp/flowforge-test",
+                "hook_event_name": "PreCompact",
+                "trigger": "auto"
+            }"#,
+        )
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("FlowForge Compaction Guidance"))
+        .stdout(predicate::str::contains("hookSpecificOutput").not())
+        .stdout(predicate::str::starts_with("{").not());
+}
+
+#[test]
+fn test_hook_subagent_start_no_context_outputs_nothing() {
+    // SubagentStart with no matching agent should produce empty stdout.
+    flowforge()
+        .args(["hook", "subagent-start"])
+        .write_stdin(
+            r#"{
+                "session_id": "test-session",
+                "transcript_path": "/tmp/test-transcript.jsonl",
+                "cwd": "/tmp/flowforge-test",
+                "hook_event_name": "SubagentStart",
+                "agent_id": "test-agent-999",
+                "agent_type": "nonexistent-agent-type-xyz"
+            }"#,
+        )
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("hookSpecificOutput").not());
 }
 
 // ── test-hooks subcommand ──

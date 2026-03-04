@@ -105,10 +105,10 @@ pub fn run() -> flowforge_core::Result<()> {
 
     if context_parts.is_empty() {
         let output = ContextOutput::none();
-        hook::write_stdout(&output)?;
+        output.write()?;
     } else {
         let output = ContextOutput::with_context(context_parts.join("\n\n"));
-        hook::write_stdout(&output)?;
+        output.write()?;
     }
 
     Ok(())

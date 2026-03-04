@@ -2339,9 +2339,12 @@ impl ToolRegistry {
     fn work_sync(&self, _params: &Value) -> Value {
         match Self::load_config().and_then(|config| {
             let db = MemoryDb::open(&config.db_path())?;
-            let pulled = flowforge_core::work_tracking::sync_from_backend(&db, &config.work_tracking)?;
-            let pushed = flowforge_core::work_tracking::push_to_backend(&db, &config.work_tracking)?;
-            let backend = flowforge_core::work_tracking::detect_backend(&config.work_tracking).to_string();
+            let pulled =
+                flowforge_core::work_tracking::sync_from_backend(&db, &config.work_tracking)?;
+            let pushed =
+                flowforge_core::work_tracking::push_to_backend(&db, &config.work_tracking)?;
+            let backend =
+                flowforge_core::work_tracking::detect_backend(&config.work_tracking).to_string();
             Ok((pulled, pushed, backend))
         }) {
             Ok((pulled, pushed, backend)) => json!({
@@ -2366,7 +2369,11 @@ impl ToolRegistry {
                     Ok(items) => {
                         let mut by_agent: HashMap<String, Vec<Value>> = HashMap::new();
                         for item in &items {
-                            let agent = item.assignee.clone().or_else(|| item.claimed_by.clone()).unwrap_or_else(|| "unassigned".to_string());
+                            let agent = item
+                                .assignee
+                                .clone()
+                                .or_else(|| item.claimed_by.clone())
+                                .unwrap_or_else(|| "unassigned".to_string());
                             by_agent.entry(agent).or_default().push(json!({
                                 "id": item.id,
                                 "title": item.title,
@@ -2385,7 +2392,9 @@ impl ToolRegistry {
                     Err(e) => json!({"status": "error", "message": format!("{e}")}),
                 }
             }
-            Err(e) => json!({"status": "error", "message": format!("Failed to open database: {e}")}),
+            Err(e) => {
+                json!({"status": "error", "message": format!("Failed to open database: {e}")})
+            }
         }
     }
 
@@ -2413,7 +2422,8 @@ impl ToolRegistry {
                 let mut valid = 0u32;
                 let mut invalid = 0u32;
                 for d in &decisions {
-                    let expected_input = format!("{}{}{}{}", d.session_id, d.tool_name, d.reason, prev_hash);
+                    let expected_input =
+                        format!("{}{}{}{}", d.session_id, d.tool_name, d.reason, prev_hash);
                     let expected_hash = format!("{:x}", Sha256::digest(expected_input.as_bytes()));
                     if d.hash == expected_hash && d.prev_hash == prev_hash {
                         valid += 1;

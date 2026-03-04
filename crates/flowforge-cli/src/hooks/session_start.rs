@@ -14,7 +14,9 @@ pub fn run() -> Result<()> {
 
     // Create DB state that session_end/other hooks expect
     if let Some(ref session_id) = input.session_id.or(input.common.session_id.clone()) {
-        if db_path.exists() || std::fs::create_dir_all(db_path.parent().unwrap_or(".".as_ref())).is_ok() {
+        if db_path.exists()
+            || std::fs::create_dir_all(db_path.parent().unwrap_or(".".as_ref())).is_ok()
+        {
             if let Ok(db) = MemoryDb::open(&db_path) {
                 let now = Utc::now();
 
@@ -23,11 +25,7 @@ pub fn run() -> Result<()> {
                     id: session_id.clone(),
                     started_at: now,
                     ended_at: None,
-                    cwd: input
-                        .common
-                        .cwd
-                        .clone()
-                        .unwrap_or_else(|| ".".to_string()),
+                    cwd: input.common.cwd.clone().unwrap_or_else(|| ".".to_string()),
                     edits: 0,
                     commands: 0,
                     summary: None,

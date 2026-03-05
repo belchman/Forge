@@ -1,17 +1,17 @@
 use flowforge_agents::{AgentRegistry, AgentRouter};
-use flowforge_core::hook::{self, ContextOutput, UserPromptSubmitInput};
-use flowforge_core::{FlowForgeConfig, PatternTier, Result, RoutingContext};
+use flowforge_core::hook::{ContextOutput, UserPromptSubmitInput};
+use flowforge_core::{PatternTier, Result, RoutingContext};
 use flowforge_memory::{MemoryDb, PatternStore};
 use std::collections::HashMap;
 
 pub fn run() -> Result<()> {
-    let v = hook::parse_stdin_value()?;
-    let input = UserPromptSubmitInput::from_value(&v)?;
+    let ctx = super::HookContext::init()?;
+    let input = UserPromptSubmitInput::from_value(&ctx.raw)?;
 
     // Kill-switch fast-path: skip routing/patterns/embeddings but still
     // enforce work-tracking so tasks are never silently forgotten.
     if std::env::var("FLOWFORGE_HOOKS_DISABLED").is_ok() {
-        return run_work_tracking_only();
+        return run_work_tracking_only(&ctx);
     }
 
     let prompt = match input.prompt {
@@ -23,23 +23,17 @@ pub fn run() -> Result<()> {
         }
     };
 
-    let config = FlowForgeConfig::load(&FlowForgeConfig::config_path())?;
     let mut context_parts: Vec<String> = Vec::new();
 
-    // Single DB connection for the entire hook (A10)
-    let db = if config.hooks.routing || config.hooks.learning {
-        let db_path = config.db_path();
-        if db_path.exists() {
-            MemoryDb::open(&db_path).ok()
-        } else {
-            None
-        }
+    // Use the DB from HookContext if available, but only if routing or learning is enabled
+    let db = if ctx.config.hooks.routing || ctx.config.hooks.learning {
+        ctx.db.as_ref()
     } else {
         None
     };
 
     // Resolve session_id and trajectory_id once for injection recording
-    let (current_session_id, current_trajectory_id) = if let Some(ref db) = db {
+    let (current_session_id, current_trajectory_id) = if let Some(db) = db {
         let sid = db
             .get_current_session()
             .ok()
@@ -57,7 +51,7 @@ pub fn run() -> Result<()> {
     };
 
     // Set trajectory task description from first user prompt
-    if let Some(ref db) = db {
+    if let Some(db) = db {
         if let (Some(ref sid), Some(ref tid)) = (&current_session_id, &current_trajectory_id) {
             if let Ok(Some(trajectory)) = db.get_active_trajectory(sid) {
                 if trajectory.task_description.is_none() {
@@ -70,23 +64,23 @@ pub fn run() -> Result<()> {
 
     // Load learned weights once from the shared DB connection (A10)
     // Also pre-compute similarity-based matches for generalization (Fix 5)
-    let learned_weights = if let Some(ref db) = db {
+    let learned_weights = if let Some(db) = db {
         load_learned_weights_from_db(db, &prompt)
     } else {
         HashMap::new()
     };
 
     // Build routing context from session state
-    let routing_context = if let Some(ref db) = db {
+    let routing_context = if let Some(db) = db {
         build_routing_context(db)
     } else {
         None
     };
 
     // Route the task to suggested agents
-    if config.hooks.routing {
-        if let Ok(registry) = AgentRegistry::load(&config.agents) {
-            let router = AgentRouter::new(&config.routing);
+    if ctx.config.hooks.routing {
+        if let Ok(registry) = AgentRegistry::load(&ctx.config.agents) {
+            let router = AgentRouter::new(&ctx.config.routing);
             let agents: Vec<&_> = registry.list().into_iter().collect();
 
             let results =
@@ -127,7 +121,7 @@ pub fn run() -> Result<()> {
 
                         // Include agent context for top match
                         if let Some(agent) = registry.get(&top.agent_name) {
-                            if config.hooks.inject_agent_body {
+                            if ctx.config.hooks.inject_agent_body {
                                 // Legacy: inject full markdown body
                                 if !agent.body.is_empty() {
                                     routing_ctx.push_str(&format!("\n\n{}", agent.body));
@@ -156,7 +150,7 @@ pub fn run() -> Result<()> {
                         context_parts.push(routing_ctx);
 
                         // Record routing injection
-                        if let Some(ref db) = db {
+                        if let Some(db) = db {
                             if let Some(ref sid) = current_session_id {
                                 let _ = db.record_context_injection(
                                     sid,
@@ -174,7 +168,7 @@ pub fn run() -> Result<()> {
     }
 
     // Inject active work items context (C4)
-    if let Some(ref db) = db {
+    if let Some(db) = db {
         let filter = flowforge_core::WorkFilter {
             status: Some("in_progress".to_string()),
             ..Default::default()
@@ -204,7 +198,7 @@ pub fn run() -> Result<()> {
                         );
                     }
                 }
-            } else if config.work_tracking.require_task {
+            } else if ctx.config.work_tracking.require_task {
                 context_parts.push(
                     "[FlowForge Work] No active work item. You MUST run `flowforge work create \"<description>\" --type task` before doing any work. Tool calls will be BLOCKED until a work item is active.".to_string()
                 );
@@ -213,21 +207,21 @@ pub fn run() -> Result<()> {
     }
 
     // Inject unread co-agent mailbox messages
-    if let Some(ref db) = db {
+    if let Some(db) = db {
         if let Some(ref sid) = input.common.session_id {
             if let Ok(unread) = db.get_unread_messages(sid) {
                 if !unread.is_empty() {
-                    let mut ctx = format!(
+                    let mut mailbox_ctx = format!(
                         "[FlowForge Mailbox] {} unread from co-agents:",
                         unread.len()
                     );
                     for msg in &unread {
-                        ctx.push_str(&format!(
+                        mailbox_ctx.push_str(&format!(
                             "\n  From {}: {}",
                             msg.from_agent_name, msg.content
                         ));
                     }
-                    context_parts.push(ctx);
+                    context_parts.push(mailbox_ctx);
 
                     // Record mailbox injections
                     if let Some(ref session_id) = current_session_id {
@@ -249,12 +243,12 @@ pub fn run() -> Result<()> {
     }
 
     // Search FlowForge memory using semantic vector search + cluster boosting
-    if config.hooks.learning {
-        if let Some(ref db) = db {
-            let store = PatternStore::new(db, &config.patterns);
+    if ctx.config.hooks.learning {
+        if let Some(db) = db {
+            let store = PatternStore::new(db, &ctx.config.patterns);
             if let Ok(matches) = store.search_all_patterns(&prompt, 5) {
                 // Filter out low-similarity noise
-                let sim_floor = config.patterns.min_injection_similarity;
+                let sim_floor = ctx.config.patterns.min_injection_similarity;
                 let matches: Vec<_> = matches
                     .into_iter()
                     .filter(|m| m.similarity as f64 >= sim_floor)
@@ -270,9 +264,9 @@ pub fn run() -> Result<()> {
                     .collect();
 
                 if !proven.is_empty() {
-                    let mut ctx = String::from("[FlowForge Memory] Proven patterns:");
+                    let mut pattern_ctx = String::from("[FlowForge Memory] Proven patterns:");
                     for p in &proven {
-                        ctx.push_str(&format!(
+                        pattern_ctx.push_str(&format!(
                             "\n- {} (conf: {:.0}%, sim: {:.0}%, used: {}x)",
                             p.content,
                             p.confidence * 100.0,
@@ -280,20 +274,20 @@ pub fn run() -> Result<()> {
                             p.usage_count
                         ));
                     }
-                    context_parts.push(ctx);
+                    context_parts.push(pattern_ctx);
                 }
 
                 if !recent.is_empty() {
-                    let mut ctx = String::from("[FlowForge Memory] Relevant patterns:");
+                    let mut pattern_ctx = String::from("[FlowForge Memory] Relevant patterns:");
                     for p in &recent {
-                        ctx.push_str(&format!(
+                        pattern_ctx.push_str(&format!(
                             "\n- {} (conf: {:.0}%, sim: {:.0}%)",
                             p.content,
                             p.confidence * 100.0,
                             p.similarity * 100.0
                         ));
                     }
-                    context_parts.push(ctx);
+                    context_parts.push(pattern_ctx);
                 }
 
                 // Record usage and injection on all injected patterns
@@ -448,51 +442,32 @@ fn load_learned_weights_from_db(db: &MemoryDb, prompt: &str) -> HashMap<(String,
 /// Lightweight fast-path: only check for active work items.
 /// Runs when FLOWFORGE_HOOKS_DISABLED is set so work-tracking enforcement
 /// is never bypassed. Skips routing, patterns, embeddings (~1.2s saved).
-fn run_work_tracking_only() -> Result<()> {
-    let config = match FlowForgeConfig::load(&FlowForgeConfig::config_path()) {
-        Ok(c) => c,
-        Err(_) => {
-            ContextOutput::none().write()?;
-            return Ok(());
-        }
-    };
-
-    if !config.work_tracking.require_task {
+fn run_work_tracking_only(ctx: &super::HookContext) -> Result<()> {
+    if !ctx.config.work_tracking.require_task {
         ContextOutput::none().write()?;
         return Ok(());
     }
 
-    let db_path = config.db_path();
-    if !db_path.exists() {
-        ContextOutput::none().write()?;
-        return Ok(());
-    }
+    let active_items = ctx.with_db("check_work_tracking", |db| {
+        let filter = flowforge_core::WorkFilter {
+            status: Some("in_progress".to_string()),
+            ..Default::default()
+        };
+        db.list_work_items(&filter)
+    });
 
-    let db = match MemoryDb::open(&db_path) {
-        Ok(db) => db,
-        Err(_) => {
-            ContextOutput::none().write()?;
-            return Ok(());
-        }
-    };
-
-    let filter = flowforge_core::WorkFilter {
-        status: Some("in_progress".to_string()),
-        ..Default::default()
-    };
-
-    match db.list_work_items(&filter) {
-        Ok(items) if !items.is_empty() => {
-            let mut ctx = String::from("[FlowForge Work] Active items:");
+    match active_items {
+        Some(items) if !items.is_empty() => {
+            let mut work_ctx = String::from("[FlowForge Work] Active items:");
             for item in items.iter().take(5) {
-                ctx.push_str(&format!(
+                work_ctx.push_str(&format!(
                     "\n- {} ({}): {}",
                     item.id.chars().take(8).collect::<String>(),
                     item.status,
                     item.title,
                 ));
             }
-            ContextOutput::with_context(ctx).write()?;
+            ContextOutput::with_context(work_ctx).write()?;
         }
         _ => {
             ContextOutput::with_context(

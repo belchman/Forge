@@ -238,36 +238,10 @@ impl ContextOutput {
 
 // ── Dangerous Command Patterns ──
 
-/// Patterns that should be blocked or warned about in Bash commands
-pub const DANGEROUS_PATTERNS: &[(&str, &str)] = &[
-    ("rm -rf /", "Recursive delete of root filesystem"),
-    ("rm -rf ~", "Recursive delete of home directory"),
-    ("rm -rf /*", "Recursive delete of all root contents"),
-    (":(){:|:&};:", "Fork bomb"),
-    ("mkfs.", "Filesystem formatting"),
-    ("dd if=/dev/zero", "Disk overwrite with zeros"),
-    ("dd if=/dev/random", "Disk overwrite with random data"),
-    ("> /dev/sda", "Direct disk overwrite"),
-    ("chmod -R 777 /", "Remove all permissions from root"),
-    ("wget|sh", "Pipe download to shell"),
-    ("curl|sh", "Pipe download to shell"),
-    ("curl|bash", "Pipe download to bash"),
-    ("wget|bash", "Pipe download to bash"),
-    ("--no-preserve-root", "Bypasses root protection"),
-    ("sudo rm -rf", "Sudo recursive force delete"),
-];
-
-/// Check if a bash command matches any dangerous pattern
+/// Check if a bash command matches any dangerous pattern.
+/// Delegates to the shared compiled regex patterns in `guidance::patterns`.
 pub fn check_dangerous_command(command: &str) -> Option<&'static str> {
-    let cmd_lower = command.to_lowercase();
-    let cmd_normalized = cmd_lower.replace('\\', "").replace('\n', " ");
-
-    for (pattern, reason) in DANGEROUS_PATTERNS {
-        if cmd_normalized.contains(&pattern.to_lowercase()) {
-            return Some(reason);
-        }
-    }
-    None
+    crate::guidance::patterns::check_dangerous_command(command)
 }
 
 /// Read hook input from stdin

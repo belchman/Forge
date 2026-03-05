@@ -27,13 +27,24 @@ impl MemoryDb {
     }
 
     pub fn end_session(&self, id: &str, ended_at: DateTime<Utc>) -> Result<()> {
-        self.conn
-            .execute(
-                "UPDATE sessions SET ended_at = ?1 WHERE id = ?2",
-                params![ended_at.to_rfc3339(), id],
-            )
-            .sq()?;
-        Ok(())
+        let ts = ended_at.to_rfc3339();
+        self.with_transaction(|| {
+            self.conn
+                .execute(
+                    "UPDATE sessions SET ended_at = ?1 WHERE id = ?2",
+                    params![ts, id],
+                )
+                .sq()?;
+            // Cascade: end all child agent sessions that are still open
+            self.conn
+                .execute(
+                    "UPDATE agent_sessions SET ended_at = ?1, status = 'Completed'
+                     WHERE parent_session_id = ?2 AND ended_at IS NULL",
+                    params![ts, id],
+                )
+                .sq()?;
+            Ok(())
+        })
     }
 
     pub fn get_current_session(&self) -> Result<Option<SessionInfo>> {

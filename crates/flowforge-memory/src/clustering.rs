@@ -76,6 +76,7 @@ impl<'a> ClusterManager<'a> {
         let l2_epsilon = (2.0 * self.config.clustering_epsilon).sqrt();
 
         let params = Dbscan::params(self.config.clustering_min_points).tolerance(l2_epsilon);
+        // SAFETY: min_points > 0 and epsilon > 0 are guaranteed by config defaults.
         let labels: ndarray::Array1<Option<usize>> = params.check_unwrap().transform(&data);
 
         // Clear old clusters

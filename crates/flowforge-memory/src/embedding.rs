@@ -140,6 +140,7 @@ impl SemanticEmbedder {
     }
 
     fn ensure_model(&self) -> std::sync::MutexGuard<'_, Option<fastembed::TextEmbedding>> {
+        // SAFETY: We never panic while holding this lock, so it cannot be poisoned.
         let mut guard = self.model.lock().unwrap();
         if guard.is_none() {
             *guard = Some(
@@ -176,6 +177,7 @@ impl Default for SemanticEmbedder {
 impl Embedder for SemanticEmbedder {
     fn embed(&self, text: &str) -> Vec<f32> {
         let mut guard = self.ensure_model();
+        // SAFETY: ensure_model() guarantees the Option is Some.
         guard
             .as_mut()
             .unwrap()

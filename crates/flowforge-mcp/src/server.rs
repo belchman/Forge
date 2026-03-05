@@ -189,7 +189,20 @@ impl McpServer {
             });
         }
 
-        let result = self.tools.call(tool_name, &arguments);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.tools.call(tool_name, &arguments)
+        }))
+        .unwrap_or_else(|panic_info| {
+            let msg = if let Some(s) = panic_info.downcast_ref::<&str>() {
+                s.to_string()
+            } else if let Some(s) = panic_info.downcast_ref::<String>() {
+                s.clone()
+            } else {
+                "unknown panic".to_string()
+            };
+            error!("tool '{}' panicked: {}", tool_name, msg);
+            json!({"status": "error", "message": format!("internal tool panic: {}", msg)})
+        });
 
         json!({
             "jsonrpc": "2.0",
@@ -300,5 +313,27 @@ mod tests {
         });
         let resp = server.handle_request(&req);
         assert!(resp["result"].is_object());
+    }
+
+    #[test]
+    fn test_catch_unwind_returns_error_on_panic() {
+        // Verify catch_unwind wrapping works: simulate what happens when a tool panics
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Value {
+            panic!("simulated tool panic");
+        }))
+        .unwrap_or_else(|panic_info| {
+            let msg = if let Some(s) = panic_info.downcast_ref::<&str>() {
+                s.to_string()
+            } else {
+                "unknown".to_string()
+            };
+            json!({"status": "error", "message": format!("internal tool panic: {}", msg)})
+        });
+
+        assert_eq!(result["status"], "error");
+        assert!(result["message"]
+            .as_str()
+            .unwrap()
+            .contains("simulated tool panic"));
     }
 }

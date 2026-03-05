@@ -153,4 +153,41 @@ impl MemoryDb {
             .sq()?;
         Ok(())
     }
+
+    /// Roll up an agent's edits/commands to its parent session.
+    /// Call this after end_agent_session so the statusline reflects agent work.
+    pub fn rollup_agent_stats_to_parent(&self, agent_id: &str) -> Result<()> {
+        self.conn
+            .execute(
+                "UPDATE sessions SET
+                    edits = edits + COALESCE(
+                        (SELECT edits FROM agent_sessions WHERE agent_id = ?1 ORDER BY started_at DESC LIMIT 1), 0),
+                    commands = commands + COALESCE(
+                        (SELECT commands FROM agent_sessions WHERE agent_id = ?1 ORDER BY started_at DESC LIMIT 1), 0)
+                 WHERE id = (SELECT parent_session_id FROM agent_sessions WHERE agent_id = ?1 ORDER BY started_at DESC LIMIT 1)",
+                params![agent_id],
+            )
+            .sq()?;
+        Ok(())
+    }
+
+    /// Clean up orphaned agent sessions — agents whose parent session has ended
+    /// or whose parent session ID is empty/invalid (never properly linked).
+    pub fn cleanup_orphaned_agent_sessions(&self) -> Result<u64> {
+        let now = chrono::Utc::now().to_rfc3339();
+        let count = self
+            .conn
+            .execute(
+                "UPDATE agent_sessions SET ended_at = ?1, status = 'Completed'
+                 WHERE ended_at IS NULL
+                   AND (
+                     parent_session_id IN (SELECT id FROM sessions WHERE ended_at IS NOT NULL)
+                     OR parent_session_id = ''
+                     OR parent_session_id NOT IN (SELECT id FROM sessions)
+                   )",
+                params![now],
+            )
+            .sq()?;
+        Ok(count as u64)
+    }
 }

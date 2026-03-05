@@ -1,49 +1,45 @@
-use flowforge_core::hook::{self, PreCompactInput};
-use flowforge_core::{FlowForgeConfig, Result};
-use flowforge_memory::{MemoryDb, PatternStore};
+use flowforge_core::hook::PreCompactInput;
+use flowforge_core::Result;
 
 pub fn run() -> Result<()> {
-    let v = hook::parse_stdin_value()?;
-    let _input = PreCompactInput::from_value(&v)?;
-    let config = FlowForgeConfig::load(&FlowForgeConfig::config_path())?;
-
-    let db_path = config.db_path();
+    let ctx = super::HookContext::init()?;
+    let _input = PreCompactInput::from_value(&ctx.raw)?;
 
     let mut guidance = vec![
         "[FlowForge Compaction Guidance]".to_string(),
         "Key context to preserve:".to_string(),
     ];
 
-    if db_path.exists() {
-        if let Ok(db) = MemoryDb::open(&db_path) {
-            // Run consolidation: promotes patterns, dedup, decay, re-cluster
-            let store = PatternStore::new(&db, &config.patterns);
-            let _ = store.consolidate();
+    // Run consolidation and gather context from DB
+    ctx.with_db("compaction_context", |db| {
+        let store = flowforge_memory::PatternStore::new(db, &ctx.config.patterns);
+        store.consolidate()?;
 
-            // Include current session stats
-            if let Ok(Some(session)) = db.get_current_session() {
-                guidance.push(format!(
-                    "- Current session: {} edits, {} commands",
-                    session.edits, session.commands
-                ));
-            }
+        // Include current session stats
+        if let Some(session) = db.get_current_session()? {
+            guidance.push(format!(
+                "- Current session: {} edits, {} commands",
+                session.edits, session.commands
+            ));
+        }
 
-            // Include recent patterns
-            if let Ok(patterns) = db.get_top_patterns(5) {
-                if !patterns.is_empty() {
-                    guidance.push("- Active patterns:".to_string());
-                    for p in &patterns {
-                        guidance.push(format!(
-                            "  - [{}] {} (conf: {:.0}%)",
-                            p.category,
-                            p.content,
-                            p.confidence * 100.0
-                        ));
-                    }
+        // Include recent patterns
+        if let Ok(patterns) = db.get_top_patterns(5) {
+            if !patterns.is_empty() {
+                guidance.push("- Active patterns:".to_string());
+                for p in &patterns {
+                    guidance.push(format!(
+                        "  - [{}] {} (conf: {:.0}%)",
+                        p.category,
+                        p.content,
+                        p.confidence * 100.0
+                    ));
                 }
             }
         }
-    }
+
+        Ok(())
+    });
 
     guidance
         .push("- Use `flowforge memory search <query>` to recall stored knowledge.".to_string());

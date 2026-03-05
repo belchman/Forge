@@ -1,47 +1,46 @@
 use chrono::Utc;
-use flowforge_core::hook::{self, PostToolUseInput};
-use flowforge_core::{EditRecord, FlowForgeConfig, Result};
+use flowforge_core::hook::PostToolUseInput;
+use flowforge_core::{EditRecord, Result};
 use flowforge_memory::MemoryDb;
 use sha2::{Digest, Sha256};
 use std::path::Path;
 
 pub fn run() -> Result<()> {
-    let v = hook::parse_stdin_value()?;
-    let input = PostToolUseInput::from_value(&v)?;
+    let ctx = super::HookContext::init()?;
+    let input = PostToolUseInput::from_value(&ctx.raw)?;
 
-    // Single config load + DB open for the entire hook
-    let config = FlowForgeConfig::load(&FlowForgeConfig::config_path())?;
-    let db_path = config.db_path();
-    if !db_path.exists() {
+    if ctx.db.is_none() {
         return Ok(());
     }
-    let db = MemoryDb::open(&db_path)?;
 
-    // Record edits for Write, Edit, MultiEdit operations (reuse config + db)
-    if config.hooks.edit_tracking {
+    // Record edits for Write, Edit, MultiEdit operations
+    if ctx.config.hooks.edit_tracking {
         match input.tool_name.as_str() {
             "Write" | "Edit" | "MultiEdit" => {
-                record_edit(&input, &db)?;
+                ctx.with_db("record_edit", |db| record_edit(&input, db));
             }
             _ => {}
         }
     }
 
-    // Record trajectory step (reuse db)
-    if let Ok(Some(session)) = db.get_current_session() {
-        if let Ok(Some(trajectory)) = db.get_active_trajectory(&session.id) {
-            // Hash tool_input for privacy
-            let input_str = serde_json::to_string(&input.tool_input).unwrap_or_default();
-            let input_hash = format!("{:x}", Sha256::digest(input_str.as_bytes()));
-            let _ = db.record_trajectory_step(
-                &trajectory.id,
-                &input.tool_name,
-                Some(&input_hash),
-                flowforge_core::trajectory::StepOutcome::Success,
-                None,
-            );
+    // Record trajectory step
+    ctx.with_db("record_trajectory_step", |db| {
+        if let Some(session) = db.get_current_session()? {
+            if let Some(trajectory) = db.get_active_trajectory(&session.id)? {
+                // Hash tool_input for privacy
+                let input_str = serde_json::to_string(&input.tool_input).unwrap_or_default();
+                let input_hash = format!("{:x}", Sha256::digest(input_str.as_bytes()));
+                db.record_trajectory_step(
+                    &trajectory.id,
+                    &input.tool_name,
+                    Some(&input_hash),
+                    flowforge_core::trajectory::StepOutcome::Success,
+                    None,
+                )?;
+            }
         }
-    }
+        Ok(())
+    });
 
     Ok(())
 }

@@ -1,5 +1,5 @@
-use chrono::Utc;
-use rusqlite::params;
+use chrono::{DateTime, Utc};
+use rusqlite::{params, OptionalExtension};
 
 use flowforge_core::{
     work_tracking::{WorkDb, WorkStealing},
@@ -7,15 +7,14 @@ use flowforge_core::{
 };
 
 use super::row_parsers::parse_work_item_row;
-use super::{MemoryDb, SqliteExt};
-
-use rusqlite::OptionalExtension;
+use super::{parse_datetime, MemoryDb, SqliteExt};
 
 impl MemoryDb {
     // ── Work Items ──
 
     pub fn create_work_item(&self, item: &WorkItem) -> Result<()> {
         let labels_json = serde_json::to_string(&item.labels).unwrap_or_else(|_| "[]".to_string());
+        let priority = item.priority.clamp(0, 4);
         self.conn
             .execute(
                 "INSERT OR REPLACE INTO work_items
@@ -33,7 +32,7 @@ impl MemoryDb {
                     item.status,
                     item.assignee,
                     item.parent_id,
-                    item.priority,
+                    priority,
                     labels_json,
                     item.created_at.to_rfc3339(),
                     item.updated_at.to_rfc3339(),
@@ -205,6 +204,24 @@ impl MemoryDb {
         result
     }
 
+    /// Find a work item by title, preferring in-progress items.
+    pub fn get_work_item_by_title(&self, title: &str) -> Result<Option<WorkItem>> {
+        // Try in-progress first, then any non-completed
+        self.conn
+            .query_row(
+                "SELECT id, external_id, backend, item_type, title, description, status, assignee,
+                        parent_id, priority, labels, created_at, updated_at, completed_at, session_id, metadata,
+                        claimed_by, claimed_at, last_heartbeat, progress, stealable
+                 FROM work_items WHERE title = ?1 AND status != 'completed'
+                 ORDER BY CASE status WHEN 'in_progress' THEN 0 ELSE 1 END, updated_at DESC
+                 LIMIT 1",
+                params![title],
+                |row| Ok(parse_work_item_row(row)),
+            )
+            .optional()
+            .sq()
+    }
+
     pub fn count_work_items_by_status(&self, status: &str) -> Result<u64> {
         self.conn
             .query_row(
@@ -265,6 +282,20 @@ impl MemoryDb {
         Ok(())
     }
 
+    pub fn get_last_heartbeat_time(&self, session_id: &str) -> Result<Option<DateTime<Utc>>> {
+        let result: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT MAX(last_heartbeat) FROM work_items WHERE claimed_by = ?1",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .sq()?
+            .flatten();
+        Ok(result.map(parse_datetime))
+    }
+
     pub fn update_heartbeat(&self, session_id: &str) -> Result<u64> {
         let now = Utc::now().to_rfc3339();
         let count = self
@@ -278,11 +309,12 @@ impl MemoryDb {
     }
 
     pub fn update_progress(&self, id: &str, progress: i32) -> Result<()> {
+        let clamped = progress.clamp(0, 100);
         let now = Utc::now().to_rfc3339();
         self.conn
             .execute(
                 "UPDATE work_items SET progress = ?1, updated_at = ?2 WHERE id = ?3",
-                params![progress, now, id],
+                params![clamped, now, id],
             )
             .sq()?;
         Ok(())
@@ -334,7 +366,8 @@ impl MemoryDb {
             .conn
             .execute(
                 "UPDATE work_items SET claimed_by = ?1, claimed_at = ?2, last_heartbeat = ?2,
-                 stealable = 0, progress = 0
+                 stealable = 0,
+                 progress = CASE WHEN progress >= 50 THEN progress ELSE 0 END
                  WHERE id = ?3 AND stealable = 1",
                 params![new_session_id, now, id],
             )
@@ -422,18 +455,25 @@ impl MemoryDb {
         Ok(updated > 0)
     }
 
-    /// Claim with load awareness: only claim if under max concurrent.
+    /// Claim with load awareness: atomic check-and-claim in a single UPDATE
+    /// to prevent race conditions where two sessions both pass the load check.
     pub fn claim_work_item_load_aware(
         &self,
         id: &str,
         session_id: &str,
         max_concurrent: u64,
     ) -> Result<bool> {
-        let current_load = self.get_session_load(session_id)?;
-        if current_load >= max_concurrent {
-            return Ok(false);
-        }
-        self.claim_work_item(id, session_id)
+        let now = Utc::now().to_rfc3339();
+        let updated = self
+            .conn
+            .execute(
+                "UPDATE work_items SET claimed_by = ?1, claimed_at = ?2, last_heartbeat = ?2, stealable = 0
+                 WHERE id = ?3 AND (claimed_by IS NULL OR stealable = 1)
+                   AND (SELECT COUNT(*) FROM work_items WHERE claimed_by = ?1 AND status = 'in_progress') < ?4",
+                params![session_id, now, id, max_concurrent],
+            )
+            .sq()?;
+        Ok(updated > 0)
     }
 
     /// Get the last stale scan timestamp for rate-limiting.

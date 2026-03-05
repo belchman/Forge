@@ -94,6 +94,11 @@ enum Commands {
         #[command(subcommand)]
         action: PluginAction,
     },
+    /// View and modify FlowForge configuration
+    Config {
+        #[command(subcommand)]
+        action: ConfigAction,
+    },
     /// Test all hooks with realistic Claude Code payloads
     TestHooks {
         /// Filter to a specific hook event (e.g. "pre-tool-use", "session-start")
@@ -433,6 +438,24 @@ enum GuidanceAction {
 }
 
 #[derive(Subcommand)]
+enum ConfigAction {
+    /// Pretty-print the resolved configuration
+    Show,
+    /// Get a config value by dot-notation key (e.g., patterns.short_term_max)
+    Get {
+        /// Dot-notation key (e.g., guidance.enabled)
+        key: String,
+    },
+    /// Set a config value by dot-notation key
+    Set {
+        /// Dot-notation key (e.g., patterns.short_term_max)
+        key: String,
+        /// New value
+        value: String,
+    },
+}
+
+#[derive(Subcommand)]
 enum PluginAction {
     /// List installed plugins
     List,
@@ -634,6 +657,11 @@ fn main() {
                 commands::guidance::audit(session.as_deref(), limit)
             }
             GuidanceAction::Verify { session } => commands::guidance::verify(session.as_deref()),
+        },
+        Commands::Config { action } => match action {
+            ConfigAction::Show => commands::config::show(),
+            ConfigAction::Get { key } => commands::config::get(&key),
+            ConfigAction::Set { key, value } => commands::config::set(&key, &value),
         },
         Commands::Plugin { action } => match action {
             PluginAction::List => commands::plugin::list(),

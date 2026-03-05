@@ -11,4 +11,45 @@ pub mod work_tracking;
 
 pub use config::FlowForgeConfig;
 pub use error::{Error, Result};
-pub use types::*;
+pub use types::{
+    // Agents
+    AgentDef,
+    // Sessions
+    AgentSession,
+    AgentSessionStatus,
+    AgentSource,
+    // Collaboration
+    Checkpoint,
+    // Patterns
+    ContextInjection,
+    ConversationMessage,
+    EditRecord,
+    // Guidance
+    GateAction,
+    GateDecision,
+    GuidanceRule,
+    HnswEntry,
+    LongTermPattern,
+    MailboxMessage,
+    PatternCluster,
+    PatternMatch,
+    PatternTier,
+    Priority,
+    RiskLevel,
+    RoutingBreakdown,
+    RoutingContext,
+    RoutingResult,
+    RoutingWeight,
+    RuleScope,
+    SessionFork,
+    SessionInfo,
+    ShortTermPattern,
+    TeamMemberState,
+    TeamMemberStatus,
+    TmuxState,
+    TrustScore,
+    // Work
+    WorkEvent,
+    WorkFilter,
+    WorkItem,
+};

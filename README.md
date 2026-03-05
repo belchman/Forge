@@ -136,7 +136,7 @@ FlowForge wires into all 13 Claude Code hook events:
 | SubagentStart | Updates monitor, stores transcript path, assigns work to agent |
 | SubagentStop | Ingests agent transcript, extracts patterns from output |
 | TeammateIdle | Detects stale work items, marks them stealable, updates monitor |
-| TaskCompleted | Releases work claims, links trajectory to work item, updates routing weights |
+| TaskCompleted | Maps Claude task to work item by title, releases work claims, links trajectory, updates routing weights |
 | Stop | Ends active session |
 | Notification | Logs to audit trail |
 
@@ -254,6 +254,7 @@ The embedding model (~30 MB) is downloaded automatically on first use from Huggi
 | `flowforge plugin list\|info\|enable\|disable` | Plugin management |
 | `flowforge tmux start\|update\|stop\|status` | tmux team monitor |
 | `flowforge mcp serve` | Start the MCP server |
+| `flowforge config get\|set` | View/modify config values |
 | `flowforge statusline` | Output status line for Claude Code |
 | `flowforge test-hooks [--event NAME] [--verbose]` | Test all hooks with realistic Claude Code payloads |
 
@@ -275,14 +276,15 @@ cargo clippy --workspace -- -D warnings
 cargo fmt --all --check
 ```
 
-**120+ tests** across 5 crates:
+**408+ tests** across 6 crates:
 
 | Crate | Tests | Coverage |
 |-------|-------|----------|
-| flowforge-cli | 42 | CLI commands, hooks, realistic Claude Code payloads, sessions, mailbox, MCP (integration) |
-| flowforge-memory | 44 | DB operations, semantic + hash embedding, HNSW search, pattern learning, DBSCAN clustering |
-| flowforge-agents | 15 | Agent loading, registry, routing |
-| flowforge-mcp | 11 | JSON-RPC server, tool dispatch |
+| flowforge-cli | 55 | CLI commands, hooks, work item mapping, realistic Claude Code payloads, sessions, mailbox, MCP (integration) |
+| flowforge-core | 33 | Config validation, status transitions, types, error handling |
+| flowforge-memory | 143 | DB operations, transactions, schema indexes, semantic + hash embedding, HNSW search, pattern learning, DBSCAN clustering |
+| flowforge-mcp | 87 | JSON-RPC server, tool dispatch, parameter validation |
+| flowforge-agents | 19 | Agent loading, registry, routing |
 | flowforge-tmux | 11 | State management, display rendering |
 
 ## Project Structure

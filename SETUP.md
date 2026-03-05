@@ -114,7 +114,7 @@ All 13 Claude Code hook events are wired:
 | `SubagentStart` | Updates tmux monitor, assigns work item to agent |
 | `SubagentStop` | Updates tmux monitor, extracts patterns from agent output |
 | `TeammateIdle` | Detects stale work items, marks them stealable, updates monitor |
-| `TaskCompleted` | Releases work claims, links trajectory to work item, updates routing weights |
+| `TaskCompleted` | Maps Claude task to work item by title, releases work claims, links trajectory, updates routing weights |
 | `Stop` | Ends active session |
 | `Notification` | Logs notifications to audit trail |
 

@@ -1,60 +1,54 @@
 use flowforge_core::hook::{self, PreToolUseInput, PreToolUseOutput};
-use flowforge_core::{FlowForgeConfig, Result};
-use flowforge_memory::MemoryDb;
+use flowforge_core::Result;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
 pub fn run() -> Result<()> {
-    let v = hook::parse_stdin_value()?;
-    let input = PreToolUseInput::from_value(&v)?;
-    let config = FlowForgeConfig::load(&FlowForgeConfig::config_path())?;
-    let db_path = config.db_path();
+    let ctx = super::HookContext::init()?;
+    let input = PreToolUseInput::from_value(&ctx.raw)?;
 
-    if !db_path.exists() {
-        // Fall back to just the dangerous command check without DB
-        if input.tool_name == "Bash" {
-            if let Some(command) = input.tool_input.get("command").and_then(|v| v.as_str()) {
-                if let Some(reason) = hook::check_dangerous_command(command) {
-                    let output = PreToolUseOutput::deny(format!(
-                        "FlowForge blocked dangerous command: {reason}"
-                    ));
-                    hook::write_stdout(&output)?;
-                    return Ok(());
-                }
-            }
-        }
+    if ctx.db.is_none() {
+        // No DB: skip guidance/work-gate but still run bash check + exit
+        check_dangerous_bash(&input)?;
         return Ok(());
     }
 
-    let db = MemoryDb::open(&db_path)?;
-
     // Resolve session_id once and reuse everywhere
-    let session_id = db
-        .get_current_session()
-        .ok()
-        .flatten()
-        .map(|s| s.id)
+    let session_id = ctx
+        .with_db("get_session_id", |db| {
+            Ok(db
+                .get_current_session()?
+                .map(|s| s.id)
+                .unwrap_or_else(|| "unknown".to_string()))
+        })
         .unwrap_or_else(|| "unknown".to_string());
 
     // 1. Guidance gates (if enabled)
-    if config.guidance.enabled {
-        let engine = match flowforge_core::guidance::GuidanceEngine::from_config(&config.guidance) {
-            Ok(e) => e,
-            Err(_) => {
-                // If guidance engine fails to initialize, skip guidance gates
-                return Ok(());
-            }
-        };
+    if ctx.config.guidance.enabled {
+        let engine =
+            match flowforge_core::guidance::GuidanceEngine::from_config(&ctx.config.guidance) {
+                Ok(e) => e,
+                Err(e) => {
+                    // Guidance init failed — log and skip guidance gates,
+                    // but fall through so bash check, work-gate, and increment still run.
+                    eprintln!("[FlowForge] guidance init error (skipping gates): {e}");
+                    // Skip the guidance block but continue to remaining checks
+                    run_remaining_checks(&ctx, &input, &session_id)?;
+                    return Ok(());
+                }
+            };
 
         // Get or create trust score for current session
-        let session_id = session_id.clone();
-
-        let trust = db
-            .get_trust_score(&session_id)
-            .ok()
-            .flatten()
-            .map(|t| t.score)
-            .unwrap_or(config.guidance.trust_initial_score);
+        let trust = ctx
+            .with_db("get_trust_score", |db| {
+                Ok(db
+                    .get_trust_score(&session_id)
+                    .ok()
+                    .flatten()
+                    .map(|t| t.score)
+                    .unwrap_or(ctx.config.guidance.trust_initial_score))
+            })
+            .unwrap_or(ctx.config.guidance.trust_initial_score);
 
         let (action, reason, rule_id) = engine.evaluate(&input.tool_name, &input.tool_input, trust);
 
@@ -66,7 +60,10 @@ pub fn run() -> Result<()> {
         };
 
         // Update trust score
-        let _ = db.update_trust_score(&session_id, &action, trust_delta);
+        let sid = session_id.clone();
+        ctx.with_db("update_trust_score", |db| {
+            db.update_trust_score(&sid, &action, trust_delta)
+        });
 
         // Record non-allow decisions in audit log
         if action != flowforge_core::types::GateAction::Allow {
@@ -77,11 +74,15 @@ pub fn run() -> Result<()> {
             };
 
             // Get previous hash for chain
-            let prev_hash = db
-                .get_gate_decisions(&session_id, 1)
-                .ok()
-                .and_then(|decisions| decisions.into_iter().next())
-                .map(|d| d.hash)
+            let prev_hash = ctx
+                .with_db("get_prev_hash", |db| {
+                    Ok(db
+                        .get_gate_decisions(&session_id, 1)
+                        .ok()
+                        .and_then(|decisions| decisions.into_iter().next())
+                        .map(|d| d.hash)
+                        .unwrap_or_default())
+                })
                 .unwrap_or_default();
 
             let new_trust = (trust + trust_delta).clamp(0.0, 1.0);
@@ -103,7 +104,9 @@ pub fn run() -> Result<()> {
                 hash,
                 prev_hash,
             };
-            let _ = db.record_gate_decision(&decision);
+            ctx.with_db("record_gate_decision", |db| {
+                db.record_gate_decision(&decision)
+            });
         }
 
         match action {
@@ -122,13 +125,13 @@ pub fn run() -> Result<()> {
     }
 
     // 2. Plugin PreToolUse hooks
-    if let Ok(plugins) = flowforge_core::plugin::load_all_plugins(&config.plugins) {
+    if let Ok(plugins) = flowforge_core::plugin::load_all_plugins(&ctx.config.plugins) {
         if !plugins.is_empty() {
             let raw_input = json!({
                 "tool_name": input.tool_name,
                 "tool_input": input.tool_input,
             });
-            let plugins_dir = FlowForgeConfig::plugins_dir();
+            let plugins_dir = flowforge_core::FlowForgeConfig::plugins_dir();
             if let Some(response) =
                 super::run_plugin_hooks("PreToolUse", &raw_input, &plugins, &plugins_dir)
             {
@@ -142,18 +145,33 @@ pub fn run() -> Result<()> {
         }
     }
 
-    // 3. Work-stealing heartbeat (piggyback on every tool use)
-    if config.work_tracking.work_stealing.enabled {
-        let _ = db.update_heartbeat(&session_id);
+    // 3. Work-stealing heartbeat (piggyback on tool use, throttled to 30s intervals)
+    if ctx.config.work_tracking.work_stealing.enabled {
+        let sid = session_id.clone();
+        let should_heartbeat = ctx
+            .with_db("check_heartbeat_age", |db| {
+                match db.get_last_heartbeat_time(&sid)? {
+                    Some(last) => {
+                        let elapsed = chrono::Utc::now().signed_duration_since(last);
+                        Ok(elapsed.num_seconds() >= 30)
+                    }
+                    None => Ok(true), // no heartbeat yet, allow
+                }
+            })
+            .unwrap_or(true);
+
+        if should_heartbeat {
+            ctx.with_db("update_heartbeat", |db| db.update_heartbeat(&sid));
+        }
     }
 
     // 4. Work-item enforcement gate: block mutating tools when no active work item
-    //    Toggle off with FLOWFORGE_NO_WORK_GATE=1 or config work_tracking.enforce_gate = false
-    if config.work_tracking.require_task
-        && config.work_tracking.enforce_gate
+    if ctx.config.work_tracking.require_task
+        && ctx.config.work_tracking.enforce_gate
         && std::env::var("FLOWFORGE_NO_WORK_GATE").is_err()
     {
-        let is_safe = config
+        let is_safe = ctx
+            .config
             .guidance
             .safe_tools
             .iter()
@@ -196,13 +214,17 @@ pub fn run() -> Result<()> {
             );
 
             if !is_allowed_cmd && !is_work_mcp && !is_coordination {
-                let filter = flowforge_core::WorkFilter {
-                    status: Some("in_progress".to_string()),
-                    ..Default::default()
-                };
-                let has_active = db
-                    .list_work_items(&filter)
-                    .map(|items| !items.is_empty())
+                let has_active = ctx
+                    .with_db("check_active_work", |db| {
+                        let filter = flowforge_core::WorkFilter {
+                            status: Some("in_progress".to_string()),
+                            ..Default::default()
+                        };
+                        Ok(db
+                            .list_work_items(&filter)
+                            .map(|items| !items.is_empty())
+                            .unwrap_or(false))
+                    })
                     .unwrap_or(false);
 
                 if !has_active {
@@ -216,7 +238,14 @@ pub fn run() -> Result<()> {
         }
     }
 
-    // 5. Existing: dangerous command check for Bash
+    // Remaining checks: bash validation + command increment
+    run_remaining_checks(&ctx, &input, &session_id)?;
+
+    Ok(())
+}
+
+/// Check bash commands for dangerous patterns and deny if matched.
+fn check_dangerous_bash(input: &PreToolUseInput) -> Result<()> {
     if input.tool_name == "Bash" {
         if let Some(command) = input.tool_input.get("command").and_then(|v| v.as_str()) {
             if let Some(reason) = hook::check_dangerous_command(command) {
@@ -224,13 +253,27 @@ pub fn run() -> Result<()> {
                     "FlowForge blocked dangerous command: {reason}"
                 ));
                 hook::write_stdout(&output)?;
-                return Ok(());
             }
         }
     }
+    Ok(())
+}
 
-    // 6. Existing: increment command count
-    let _ = db.increment_session_commands(&session_id);
+/// Run checks that must always execute regardless of guidance/plugin status:
+/// dangerous command validation and command count increment.
+fn run_remaining_checks(
+    ctx: &super::HookContext,
+    input: &PreToolUseInput,
+    session_id: &str,
+) -> Result<()> {
+    // Dangerous command check for Bash
+    check_dangerous_bash(input)?;
+
+    // Increment command count
+    let sid = session_id.to_string();
+    ctx.with_db("increment_session_commands", |db| {
+        db.increment_session_commands(&sid)
+    });
 
     Ok(())
 }

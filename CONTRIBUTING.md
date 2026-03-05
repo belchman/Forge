@@ -8,7 +8,7 @@ After any change, always run:
 
 ```bash
 cargo build --workspace              # Must compile with 0 warnings
-cargo test --workspace               # All 164+ tests must pass
+cargo test --workspace               # All 408+ tests must pass
 cargo clippy --workspace -- -D warnings  # Must be clean
 cargo fmt --all --check              # Must be formatted
 ```
@@ -23,13 +23,14 @@ cargo install --path crates/flowforge-cli --force
 
 MCP tools are how Claude interacts with FlowForge during a session.
 
-1. **Register the tool** in `crates/flowforge-mcp/src/tools.rs` inside `register_all()`:
+1. **Register the tool** in the appropriate `crates/flowforge-mcp/src/tools/<category>.rs` file inside `register()`:
    - Add a `self.register(ToolDef { name, description, input_schema })` call
-   - Keep tools grouped by category with a comment header
+   - Keep tools grouped by category; create a new file for new categories
 
-2. **Handle the tool call** in `crates/flowforge-mcp/src/tools.rs` inside the `call()` method:
+2. **Handle the tool call** in the same file's `call()` method:
    - Add a match arm for the tool name
-   - Parse parameters from `params`, call DB/core logic, return JSON result
+   - Parse parameters using `ParamExt` trait methods (use `require_str()` for required params)
+   - Return JSON result
 
 3. **Update the tool count test** in `crates/flowforge-mcp/src/server.rs`:
    - Find `assert_eq!(tools.len(), 53)` and increment the count
@@ -75,23 +76,35 @@ Hooks are the main integration point between Claude Code and FlowForge. They run
 
 ## Adding a New DB Table or Column
 
-1. **Add the table** to `init_schema()` in `crates/flowforge-memory/src/db.rs`:
+1. **Add the table** to `init_schema()` in `crates/flowforge-memory/src/db/schema.rs`:
    - New tables: add `CREATE TABLE IF NOT EXISTS` statement
    - New columns on existing tables: use `migrate_add_column()` pattern (ALTER TABLE with IF NOT EXISTS check)
+   - Add indexes for frequently-queried columns
+   - Bump `SCHEMA_VERSION` when adding indexes or migrations
 
-2. **Add DB methods** in `crates/flowforge-memory/src/db.rs`:
+2. **Add DB methods** in the appropriate `crates/flowforge-memory/src/db/<module>.rs` file:
+   - `sessions.rs` for session operations
+   - `work_items.rs` for work item CRUD and work-stealing
+   - `agent_sessions.rs` for agent session management
    - Follow the existing pattern: `pub fn method_name(&self, ...) -> Result<T>`
    - Use `self.conn.execute()` for writes, `self.conn.query_row()` / `self.conn.prepare()` for reads
+   - For multi-step mutations, use `self.with_transaction(|| { ... })` for atomicity
 
-3. **If the table is accessed by both CLI and MCP**, add the method to the `WorkDb` trait in `crates/flowforge-core/src/work_tracking.rs` and implement it for `MemoryDb`
+3. **If the table is accessed by both CLI and MCP**, add the method to the `WorkDb` trait in `crates/flowforge-core/src/work_tracking/mod.rs` and implement it for `MemoryDb`
 
 ## Adding a New Type
 
-1. **Add the type** to `crates/flowforge-core/src/types.rs`
+1. **Add the type** to the appropriate `crates/flowforge-core/src/types/<module>.rs` file:
+   - `work.rs` for work items, events, filters
+   - `sessions.rs` for session types
+   - `agents.rs` for agent definitions
+   - `guidance.rs` for guidance/gate types
+   - `patterns.rs` for pattern learning types
+   - `collaboration.rs` for mailbox, team, checkpoint types
    - Use `#[derive(Debug, Clone, Serialize, Deserialize)]` for data types
    - Use `#[derive(Debug, Clone, Copy, PartialEq)]` for enums
 
-2. **Re-export** from `crates/flowforge-core/src/lib.rs` if it needs to be public
+2. **Re-export** from `crates/flowforge-core/src/types/mod.rs` — types are automatically re-exported from the crate root
 
 ## Adding a New Config Section
 
@@ -168,18 +181,25 @@ The init command in `crates/flowforge-cli/src/commands/init.rs` sets up new proj
 |------|---------|
 | `crates/flowforge-cli/src/main.rs` | CLI entry point, all command definitions |
 | `crates/flowforge-cli/src/commands/init.rs` | Project initialization, hook wiring template |
+| `crates/flowforge-cli/src/hooks/mod.rs` | Hook shared context (`HookContext`), `run_safe()`, `resolve_work_item_for_task()` |
 | `crates/flowforge-cli/src/hooks/*.rs` | 13 hook handlers (one per file) |
-| `crates/flowforge-core/src/types.rs` | All shared types and enums |
-| `crates/flowforge-core/src/config.rs` | All config structs with defaults |
+| `crates/flowforge-core/src/types/*.rs` | All shared types, decomposed by domain (work, sessions, agents, guidance, patterns, collaboration) |
+| `crates/flowforge-core/src/config.rs` | All config structs with defaults and cross-field validation |
 | `crates/flowforge-core/src/error.rs` | Error enum |
-| `crates/flowforge-core/src/guidance.rs` | Guidance engine (5 gates) |
+| `crates/flowforge-core/src/guidance/*.rs` | Guidance engine (5 gates), decomposed into engine + gates |
 | `crates/flowforge-core/src/plugin.rs` | Plugin manifest loader |
 | `crates/flowforge-core/src/plugin_exec.rs` | Plugin command execution |
-| `crates/flowforge-core/src/work_tracking.rs` | WorkBackend trait, KanbusBackend (native crate), BeadsBackend, WorkDb trait, work-stealing |
+| `crates/flowforge-core/src/work_tracking/*.rs` | WorkBackend trait, KanbusBackend, BeadsBackend, WorkDb trait, work-stealing, Claude Tasks sync, status validation |
 | `crates/flowforge-core/src/trajectory.rs` | Trajectory types |
-| `crates/flowforge-memory/src/db.rs` | SQLite schema, all DB methods (~80 methods) |
+| `crates/flowforge-memory/src/db/mod.rs` | MemoryDb struct, `with_transaction()`, core DB methods |
+| `crates/flowforge-memory/src/db/schema.rs` | SQLite schema (v5), indexes, migrations |
+| `crates/flowforge-memory/src/db/sessions.rs` | Session CRUD (transaction-wrapped cascade) |
+| `crates/flowforge-memory/src/db/work_items.rs` | Work item CRUD, work-stealing, title-based lookup |
+| `crates/flowforge-memory/src/db/tests.rs` | DB test suite (143+ tests) |
+| `crates/flowforge-memory/src/patterns/*.rs` | Pattern store, decay, consolidation |
 | `crates/flowforge-memory/src/trajectory.rs` | Trajectory judge (judgment, distillation, consolidation) |
-| `crates/flowforge-mcp/src/tools.rs` | MCP tool registry + dispatch (53 tools) |
+| `crates/flowforge-mcp/src/tools/*.rs` | MCP tool registry + dispatch (53 tools), decomposed by category |
+| `crates/flowforge-mcp/src/params.rs` | `ParamExt` trait with `require_str()` for MCP parameter validation |
 | `crates/flowforge-mcp/src/server.rs` | JSON-RPC server, tool count test |
 | `crates/flowforge-agents/src/registry.rs` | Agent loader (built-in + project + plugin) |
 | `.claude/settings.json` | Live hook wiring (must match init.rs template) |

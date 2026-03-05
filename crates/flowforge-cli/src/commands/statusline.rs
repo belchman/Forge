@@ -207,11 +207,7 @@ pub fn run() -> Result<()> {
 
         // Agents: "N active (names)" or "no agents"
         // Scope to current session to avoid showing stale agents from previous sessions
-        let current_session_id = db
-            .get_current_session()
-            .ok()
-            .flatten()
-            .map(|s| s.id);
+        let current_session_id = db.get_current_session().ok().flatten().map(|s| s.id);
         let (active_count, idle_count, agent_names) =
             get_agent_summary(db, current_session_id.as_deref());
         let total = active_count + idle_count;
@@ -304,9 +300,10 @@ pub fn run() -> Result<()> {
         }
         let log_path = FlowForgeConfig::project_dir().join("hook-errors.log");
         if log_path.exists() {
-            if let Ok(meta) = std::fs::metadata(&log_path) {
-                if meta.len() > 0 {
-                    warn_parts.push("hook-err".red().to_string());
+            if let Ok(content) = std::fs::read_to_string(&log_path) {
+                let err_count = content.lines().filter(|l| !l.trim().is_empty()).count();
+                if err_count > 0 {
+                    warn_parts.push(format!("{} hook-err", err_count).red().to_string());
                 }
             }
         }

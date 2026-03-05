@@ -12,4 +12,4 @@ pub use db::MemoryDb;
 pub use embedding::SemanticEmbedder;
 pub use embedding::{cosine_similarity, default_embedder, Embedder, HashEmbedder};
 pub use hnsw::HnswIndex;
-pub use patterns::PatternStore;
+pub use patterns::{new_hnsw_cache, HnswCache, PatternStore};

@@ -9,6 +9,8 @@ pub trait ParamExt {
     fn bool_or(&self, key: &str, default: bool) -> bool;
     fn opt_i64(&self, key: &str) -> Option<i64>;
     fn opt_u32(&self, key: &str) -> Option<u32>;
+    /// Require a string parameter. Returns Err with a descriptive error if missing or wrong type.
+    fn require_str(&self, key: &str) -> Result<&str, flowforge_core::Error>;
 }
 
 impl ParamExt for Value {
@@ -38,5 +40,14 @@ impl ParamExt for Value {
 
     fn opt_u32(&self, key: &str) -> Option<u32> {
         self.get(key).and_then(|v| v.as_u64()).map(|n| n as u32)
+    }
+
+    fn require_str(&self, key: &str) -> Result<&str, flowforge_core::Error> {
+        self.get(key)
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| {
+                flowforge_core::Error::Config(format!("missing required parameter: {key}"))
+            })
     }
 }

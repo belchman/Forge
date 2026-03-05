@@ -1,0 +1,369 @@
+//! Work tracking backend implementations: Kanbus, Beads, and backend resolution.
+
+use std::path::{Path, PathBuf};
+
+use tracing::warn;
+
+use crate::config::WorkTrackingConfig;
+use crate::types::WorkItem;
+use crate::Result;
+
+use super::claude_tasks::sync_to_claude_tasks;
+use super::WorkDb;
+
+/// Run a closure with stderr suppressed (redirected to /dev/null).
+/// Kanbus's `publish_notification` uses `eprintln!` for non-critical warnings
+/// when the console server isn't running. This suppresses those warnings.
+#[cfg(unix)]
+fn with_stderr_suppressed<T, F: FnOnce() -> T>(f: F) -> T {
+    use std::os::unix::io::AsRawFd;
+    let devnull = std::fs::OpenOptions::new()
+        .write(true)
+        .open("/dev/null")
+        .ok();
+    let saved_fd = devnull.as_ref().map(|dn| unsafe {
+        let saved = libc::dup(2);
+        libc::dup2(dn.as_raw_fd(), 2);
+        saved
+    });
+    let result = f();
+    if let Some(fd) = saved_fd {
+        unsafe {
+            libc::dup2(fd, 2);
+            libc::close(fd);
+        }
+    }
+    result
+}
+
+#[cfg(not(unix))]
+fn with_stderr_suppressed<T, F: FnOnce() -> T>(f: F) -> T {
+    f()
+}
+
+// ── WorkBackend trait ──
+
+/// Internal trait for external work-tracking backends (kanbus, beads).
+/// Claude Tasks is NOT a backend — it's an unconditional dual-write side-effect.
+pub(crate) trait WorkBackend {
+    /// Create an item in the external backend, returning its external ID if available.
+    fn create(&self, item: &WorkItem) -> Result<Option<String>>;
+    /// Update an item's status in the external backend.
+    fn update_status(&self, external_id: &str, status: &str) -> Result<()>;
+    /// Pull items from the external backend into FlowForge SQLite. Returns count synced.
+    fn sync_inbound(&self, db: &dyn WorkDb, config: &WorkTrackingConfig) -> Result<u32>;
+}
+
+// ── KanbusBackend ──
+
+pub(crate) struct KanbusBackend {
+    root: PathBuf,
+}
+
+impl KanbusBackend {
+    pub(crate) fn new(config: &WorkTrackingConfig) -> Self {
+        let root = config
+            .kanbus
+            .root
+            .clone()
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+        Self { root }
+    }
+}
+
+impl WorkBackend for KanbusBackend {
+    fn create(&self, item: &WorkItem) -> Result<Option<String>> {
+        let request = kanbus::issue_creation::IssueCreationRequest {
+            root: self.root.clone(),
+            title: item.title.clone(),
+            issue_type: Some(item.item_type.clone()),
+            priority: Some(item.priority.clamp(1, 4) as u8),
+            assignee: item.assignee.clone(),
+            parent: item.parent_id.clone(),
+            labels: item.labels.clone(),
+            description: item.description.clone(),
+            local: false,
+            validate: false,
+        };
+
+        match with_stderr_suppressed(|| kanbus::issue_creation::create_issue(&request)) {
+            Ok(result) => Ok(Some(result.issue.identifier)),
+            Err(e) => {
+                warn!("kanbus create failed: {e}");
+                Ok(None)
+            }
+        }
+    }
+
+    fn update_status(&self, external_id: &str, status: &str) -> Result<()> {
+        if status == "completed" {
+            if let Err(e) =
+                with_stderr_suppressed(|| kanbus::issue_close::close_issue(&self.root, external_id))
+            {
+                warn!("kanbus close failed: {e}");
+            }
+            return Ok(());
+        }
+
+        let kanbus_status = match status {
+            "pending" => "open",
+            "in_progress" => "in_progress",
+            "blocked" => "blocked",
+            other => other,
+        };
+
+        if let Err(e) = with_stderr_suppressed(|| {
+            kanbus::issue_update::update_issue(
+                &self.root,
+                external_id,
+                None,                // title
+                None,                // description
+                Some(kanbus_status), // status
+                None,                // assignee
+                None,                // priority
+                false,               // claim
+                false,               // validate
+                &[],                 // add_labels
+                &[],                 // remove_labels
+                None,                // set_labels
+                None,                // parent
+            )
+        }) {
+            warn!("kanbus status update failed: {e}");
+        }
+        Ok(())
+    }
+
+    fn sync_inbound(&self, db: &dyn WorkDb, config: &WorkTrackingConfig) -> Result<u32> {
+        let issues = match with_stderr_suppressed(|| {
+            kanbus::issue_listing::list_issues(
+                &self.root,
+                None,  // status (all)
+                None,  // issue_type
+                None,  // assignee
+                None,  // label
+                None,  // sort
+                None,  // search
+                &[],   // project_filter
+                false, // include_local
+                false, // local_only
+            )
+        }) {
+            Ok(issues) => issues,
+            Err(e) => {
+                warn!("kanbus list failed: {e}");
+                return Ok(0);
+            }
+        };
+
+        let mut synced = 0u32;
+        let now = chrono::Utc::now();
+
+        for issue in &issues {
+            let ext_id = &issue.identifier;
+            if db.get_work_item_by_external_id(ext_id)?.is_some() {
+                continue;
+            }
+
+            let status = match issue.status.as_str() {
+                "closed" => "completed",
+                "open" | "backlog" => "pending",
+                "in_progress" => "in_progress",
+                "blocked" => "blocked",
+                other => other,
+            };
+
+            let priority = issue.priority.clamp(1, 4);
+
+            let work_item = WorkItem {
+                id: uuid::Uuid::new_v4().to_string(),
+                external_id: Some(ext_id.to_string()),
+                backend: "kanbus".to_string(),
+                item_type: issue.issue_type.clone(),
+                title: issue.title.clone(),
+                description: if issue.description.is_empty() {
+                    None
+                } else {
+                    Some(issue.description.clone())
+                },
+                status: status.to_string(),
+                assignee: issue.assignee.clone(),
+                parent_id: issue.parent.clone(),
+                priority,
+                labels: issue.labels.clone(),
+                created_at: now,
+                updated_at: now,
+                completed_at: if status == "completed" {
+                    Some(now)
+                } else {
+                    None
+                },
+                session_id: None,
+                metadata: None,
+                claimed_by: None,
+                claimed_at: None,
+                last_heartbeat: None,
+                progress: 0,
+                stealable: false,
+            };
+
+            db.create_work_item(&work_item)?;
+            let _ = sync_to_claude_tasks(&work_item, config);
+            synced += 1;
+        }
+
+        Ok(synced)
+    }
+}
+
+// ── BeadsBackend ──
+
+pub(crate) struct BeadsBackend;
+
+impl WorkBackend for BeadsBackend {
+    fn create(&self, item: &WorkItem) -> Result<Option<String>> {
+        let mut cmd = std::process::Command::new("bd");
+        cmd.arg("create").arg(&item.title);
+
+        if let Some(ref desc) = item.description {
+            cmd.arg("--description").arg(desc);
+        }
+
+        match cmd.output() {
+            Ok(o) if !o.status.success() => {
+                warn!("bd create failed: {}", String::from_utf8_lossy(&o.stderr));
+            }
+            Err(e) => warn!("bd not available: {e}"),
+            _ => {}
+        }
+        Ok(None)
+    }
+
+    fn update_status(&self, external_id: &str, status: &str) -> Result<()> {
+        let result = match status {
+            "completed" => std::process::Command::new("bd")
+                .arg("close")
+                .arg(external_id)
+                .output(),
+            _ => std::process::Command::new("bd")
+                .arg("update")
+                .arg(external_id)
+                .arg("--status")
+                .arg(status)
+                .output(),
+        };
+        if let Err(e) = result {
+            warn!("bd status update failed: {e}");
+        }
+        Ok(())
+    }
+
+    fn sync_inbound(&self, db: &dyn WorkDb, _config: &WorkTrackingConfig) -> Result<u32> {
+        let beads_file = Path::new(".beads/issues.jsonl");
+        if !beads_file.exists() {
+            return Ok(0);
+        }
+
+        let content = match std::fs::read_to_string(beads_file) {
+            Ok(c) => c,
+            Err(_) => return Ok(0),
+        };
+
+        let mut synced = 0u32;
+        let now = chrono::Utc::now();
+
+        for line in content.lines() {
+            let item: serde_json::Value = match serde_json::from_str(line) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+
+            let ext_id = item["id"].as_str().unwrap_or_default();
+            if ext_id.is_empty() {
+                continue;
+            }
+
+            if db.get_work_item_by_external_id(ext_id)?.is_some() {
+                continue;
+            }
+
+            let status = match item["status"].as_str().unwrap_or("open") {
+                "closed" | "done" => "completed",
+                "open" => "pending",
+                other => other,
+            };
+
+            let work_item = WorkItem {
+                id: uuid::Uuid::new_v4().to_string(),
+                external_id: Some(ext_id.to_string()),
+                backend: "beads".to_string(),
+                item_type: "task".to_string(),
+                title: item["title"].as_str().unwrap_or("(untitled)").to_string(),
+                description: item["body"].as_str().map(|s| s.to_string()),
+                status: status.to_string(),
+                assignee: None,
+                parent_id: None,
+                priority: 2,
+                labels: vec![],
+                created_at: now,
+                updated_at: now,
+                completed_at: None,
+                session_id: None,
+                metadata: None,
+                claimed_by: None,
+                claimed_at: None,
+                last_heartbeat: None,
+                progress: 0,
+                stealable: false,
+            };
+
+            db.create_work_item(&work_item)?;
+            synced += 1;
+        }
+
+        Ok(synced)
+    }
+}
+
+// ── Backend resolution ──
+
+/// Resolve the active backend name and trait object.
+/// Returns ("backend_name", Some(impl)) for kanbus/beads, or ("name", None) for others.
+pub(crate) fn resolve_backend(config: &WorkTrackingConfig) -> (&str, Option<Box<dyn WorkBackend>>) {
+    let name = detect_backend(config);
+    match name {
+        "kanbus" => (name, Some(Box::new(KanbusBackend::new(config)))),
+        "beads" => (name, Some(Box::new(BeadsBackend))),
+        other => (other, None),
+    }
+}
+
+/// Detect which work tracking backend is active.
+pub fn detect_backend(config: &WorkTrackingConfig) -> &str {
+    if config.backend != "auto" {
+        return &config.backend;
+    }
+
+    // Check for Kanbus
+    if Path::new(".kanbus.yml").exists() || Path::new(".kanbus").exists() {
+        return "kanbus";
+    }
+
+    // Check for Beads
+    if Path::new(".beads").exists() {
+        return "beads";
+    }
+
+    // Check for Claude Tasks via environment
+    if std::env::var("CLAUDE_CODE_TASK_LIST_ID").is_ok() {
+        return "claude_tasks";
+    }
+
+    // Check for Claude Tasks directory
+    let home = dirs::home_dir().unwrap_or_default();
+    if home.join(".claude/tasks").exists() {
+        return "claude_tasks";
+    }
+
+    "flowforge"
+}

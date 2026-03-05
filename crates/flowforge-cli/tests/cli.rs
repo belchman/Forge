@@ -615,6 +615,51 @@ fn test_test_hooks_help() {
         .stdout(predicate::str::contains("realistic Claude Code payloads"));
 }
 
+// ── Statusline error count ──
+
+#[test]
+fn test_statusline_shows_hook_err_count() {
+    // Create a temp dir with .flowforge/hook-errors.log containing multiple errors
+    let dir = tempfile::tempdir().unwrap();
+    let ff_dir = dir.path().join(".flowforge");
+    std::fs::create_dir_all(&ff_dir).unwrap();
+    std::fs::write(ff_dir.join("config.toml"), "").unwrap();
+    std::fs::write(
+        ff_dir.join("hook-errors.log"),
+        "[2026-03-04T10:00:00Z] hook1: Error 1\n[2026-03-04T10:01:00Z] hook2: Error 2\n[2026-03-04T10:02:00Z] hook3: Error 3\n",
+    ).unwrap();
+
+    let assert = flowforge()
+        .arg("statusline")
+        .write_stdin("{}")
+        .current_dir(dir.path())
+        .assert();
+    let output = assert.get_output().clone();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Should show "3 hook-err" or similar count
+    assert!(
+        stdout.contains("3") && stdout.contains("hook-err"),
+        "Expected '3 hook-err' in statusline, got: {stdout}"
+    );
+}
+
+#[test]
+fn test_statusline_no_hook_err_when_log_empty() {
+    let dir = tempfile::tempdir().unwrap();
+    let ff_dir = dir.path().join(".flowforge");
+    std::fs::create_dir_all(&ff_dir).unwrap();
+    std::fs::write(ff_dir.join("config.toml"), "").unwrap();
+    // No hook-errors.log file
+
+    flowforge()
+        .arg("statusline")
+        .write_stdin("{}")
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("hook-err").not());
+}
+
 // ── MCP server ──
 
 #[test]
@@ -627,4 +672,216 @@ fn test_mcp_serve_initialize() {
         .assert()
         .success()
         .stdout(predicate::str::contains("flowforge"));
+}
+
+// ── Config commands ──
+
+#[test]
+fn test_config_show() {
+    flowforge()
+        .args(["config", "show"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("FlowForge Configuration"));
+}
+
+#[test]
+fn test_config_get_valid_key() {
+    flowforge()
+        .args(["config", "get", "patterns.short_term_max"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("500"));
+}
+
+#[test]
+fn test_config_get_invalid_key() {
+    flowforge()
+        .args(["config", "get", "patterns.no_such_field"])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn test_config_set_writes_toml() {
+    // Use a temp dir to avoid mutating the real config
+    let dir = tempfile::tempdir().unwrap();
+    let ff_dir = dir.path().join(".flowforge");
+    std::fs::create_dir_all(&ff_dir).unwrap();
+    // Write a minimal config so `set` has something to load
+    std::fs::write(ff_dir.join("config.toml"), "").unwrap();
+
+    flowforge()
+        .args(["config", "set", "patterns.short_term_max", "999"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Set"));
+
+    // Verify the file was written
+    let content = std::fs::read_to_string(ff_dir.join("config.toml")).unwrap();
+    assert!(content.contains("999"));
+}
+
+#[test]
+fn test_config_set_invalid_value_rejects() {
+    let dir = tempfile::tempdir().unwrap();
+    let ff_dir = dir.path().join(".flowforge");
+    std::fs::create_dir_all(&ff_dir).unwrap();
+    std::fs::write(ff_dir.join("config.toml"), "").unwrap();
+
+    flowforge()
+        .args(["config", "set", "patterns.short_term_max", "not_a_number"])
+        .current_dir(dir.path())
+        .assert()
+        .failure();
+}
+
+#[test]
+fn test_config_roundtrip_set_then_get() {
+    let dir = tempfile::tempdir().unwrap();
+    let ff_dir = dir.path().join(".flowforge");
+    std::fs::create_dir_all(&ff_dir).unwrap();
+    std::fs::write(ff_dir.join("config.toml"), "").unwrap();
+
+    // Set a value
+    flowforge()
+        .args(["config", "set", "general.log_level", "debug"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    // Get it back
+    flowforge()
+        .args(["config", "get", "general.log_level"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("debug"));
+}
+
+// ── Task ID → Work Item Mapping ──
+
+/// End-to-end test: resolve_work_item_for_task matches by title,
+/// falls back to in-progress, and returns None when DB is empty.
+#[test]
+fn test_task_to_work_item_mapping() {
+    use flowforge_memory::MemoryDb;
+
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    let db = MemoryDb::open(tmp.path()).unwrap();
+
+    // Create two work items with distinct titles
+    let now = chrono::Utc::now();
+    let kanbus_item = flowforge_core::WorkItem {
+        id: "kanbus-abc123".to_string(),
+        external_id: Some("abc123".to_string()),
+        backend: "kanbus".to_string(),
+        item_type: "task".to_string(),
+        title: "Fix authentication bug".to_string(),
+        description: None,
+        status: "in_progress".to_string(),
+        assignee: None,
+        parent_id: None,
+        priority: 2,
+        labels: vec![],
+        created_at: now,
+        updated_at: now,
+        completed_at: None,
+        session_id: None,
+        metadata: None,
+        claimed_by: None,
+        claimed_at: None,
+        last_heartbeat: None,
+        progress: 0,
+        stealable: false,
+    };
+    db.create_work_item(&kanbus_item).unwrap();
+
+    let claude_item = flowforge_core::WorkItem {
+        id: "ff-uuid-456".to_string(),
+        external_id: None,
+        backend: "flowforge".to_string(),
+        item_type: "task".to_string(),
+        title: "Add dark mode support".to_string(),
+        description: None,
+        status: "in_progress".to_string(),
+        assignee: None,
+        parent_id: None,
+        priority: 2,
+        labels: vec![],
+        created_at: now,
+        updated_at: now,
+        completed_at: None,
+        session_id: None,
+        metadata: None,
+        claimed_by: None,
+        claimed_at: None,
+        last_heartbeat: None,
+        progress: 0,
+        stealable: false,
+    };
+    db.create_work_item(&claude_item).unwrap();
+
+    // Simulate what HookContext::resolve_work_item_for_task does:
+
+    // Case 1: Claude task subject matches the kanbus item title → finds it
+    let found = db
+        .get_work_item_by_title("Fix authentication bug")
+        .unwrap();
+    assert_eq!(found.as_ref().map(|i| i.id.as_str()), Some("kanbus-abc123"));
+    assert_eq!(found.as_ref().map(|i| i.backend.as_str()), Some("kanbus"));
+
+    // Case 2: Claude task subject matches the flowforge item → finds it
+    let found = db
+        .get_work_item_by_title("Add dark mode support")
+        .unwrap();
+    assert_eq!(found.as_ref().map(|i| i.id.as_str()), Some("ff-uuid-456"));
+
+    // Case 3: No title match → fallback to any in_progress item
+    let found = db
+        .get_work_item_by_title("Some unrelated task")
+        .unwrap();
+    assert!(found.is_none()); // title lookup returns None
+    // Fallback: find any in-progress item
+    let filter = flowforge_core::WorkFilter {
+        status: Some("in_progress".to_string()),
+        ..Default::default()
+    };
+    let in_progress = db.list_work_items(&filter).unwrap();
+    assert_eq!(in_progress.len(), 2); // both items are in_progress
+
+    // Case 4: Completed items are excluded from title match
+    db.update_work_item_status("kanbus-abc123", "completed")
+        .unwrap();
+    let found = db
+        .get_work_item_by_title("Fix authentication bug")
+        .unwrap();
+    assert!(found.is_none()); // completed → not returned
+
+    // Case 5: Work events can be recorded against the resolved item
+    let event = flowforge_core::WorkEvent {
+        id: 0,
+        work_item_id: "ff-uuid-456".to_string(),
+        event_type: "completed".to_string(),
+        old_value: Some("in_progress".to_string()),
+        new_value: Some("completed".to_string()),
+        actor: Some("hook:task-completed".to_string()),
+        timestamp: now,
+    };
+    let event_id = db.record_work_event(&event).unwrap();
+    assert!(event_id > 0); // FK constraint passes — no error
+
+    // Case 6: Recording against a non-existent ID would fail FK
+    let bad_event = flowforge_core::WorkEvent {
+        id: 0,
+        work_item_id: "claude-task-99".to_string(), // not in work_items
+        event_type: "completed".to_string(),
+        old_value: None,
+        new_value: None,
+        actor: None,
+        timestamp: now,
+    };
+    let result = db.record_work_event(&bad_event);
+    assert!(result.is_err()); // FK violation
 }

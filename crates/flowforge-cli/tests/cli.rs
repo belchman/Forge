@@ -826,24 +826,18 @@ fn test_task_to_work_item_mapping() {
     // Simulate what HookContext::resolve_work_item_for_task does:
 
     // Case 1: Claude task subject matches the kanbus item title → finds it
-    let found = db
-        .get_work_item_by_title("Fix authentication bug")
-        .unwrap();
+    let found = db.get_work_item_by_title("Fix authentication bug").unwrap();
     assert_eq!(found.as_ref().map(|i| i.id.as_str()), Some("kanbus-abc123"));
     assert_eq!(found.as_ref().map(|i| i.backend.as_str()), Some("kanbus"));
 
     // Case 2: Claude task subject matches the flowforge item → finds it
-    let found = db
-        .get_work_item_by_title("Add dark mode support")
-        .unwrap();
+    let found = db.get_work_item_by_title("Add dark mode support").unwrap();
     assert_eq!(found.as_ref().map(|i| i.id.as_str()), Some("ff-uuid-456"));
 
     // Case 3: No title match → fallback to any in_progress item
-    let found = db
-        .get_work_item_by_title("Some unrelated task")
-        .unwrap();
+    let found = db.get_work_item_by_title("Some unrelated task").unwrap();
     assert!(found.is_none()); // title lookup returns None
-    // Fallback: find any in-progress item
+                              // Fallback: find any in-progress item
     let filter = flowforge_core::WorkFilter {
         status: Some("in_progress".to_string()),
         ..Default::default()
@@ -854,9 +848,7 @@ fn test_task_to_work_item_mapping() {
     // Case 4: Completed items are excluded from title match
     db.update_work_item_status("kanbus-abc123", "completed")
         .unwrap();
-    let found = db
-        .get_work_item_by_title("Fix authentication bug")
-        .unwrap();
+    let found = db.get_work_item_by_title("Fix authentication bug").unwrap();
     assert!(found.is_none()); // completed → not returned
 
     // Case 5: Work events can be recorded against the resolved item

@@ -1532,8 +1532,8 @@ fn test_helpers_module_roundtrip() {
 }
 
 #[test]
-fn test_schema_version_is_5() {
-    assert_eq!(SCHEMA_VERSION, 5);
+fn test_schema_version_is_6() {
+    assert_eq!(SCHEMA_VERSION, 6);
 }
 
 #[test]
@@ -2121,4 +2121,105 @@ fn test_get_work_item_by_title_skips_completed() {
 
     let found = db.get_work_item_by_title("Refactor parser").unwrap();
     assert!(found.is_none());
+}
+
+// ── v5 Phase 5: Nested transaction tests ──
+
+#[test]
+fn test_nested_transaction_inner_success() {
+    let db = test_db();
+    db.with_transaction(|| {
+        db.set_meta("outer_key", "outer_value")?;
+        db.with_transaction(|| {
+            db.set_meta("inner_key", "inner_value")?;
+            Ok(())
+        })?;
+        Ok(())
+    })
+    .unwrap();
+
+    assert_eq!(
+        db.get_meta("outer_key").unwrap(),
+        Some("outer_value".to_string())
+    );
+    assert_eq!(
+        db.get_meta("inner_key").unwrap(),
+        Some("inner_value".to_string())
+    );
+}
+
+#[test]
+fn test_nested_transaction_inner_rollback_outer_success() {
+    let db = test_db();
+    db.with_transaction(|| {
+        db.set_meta("outer_key", "outer_value")?;
+        // Inner transaction fails — should roll back to savepoint
+        let inner_result: flowforge_core::Result<()> = db.with_transaction(|| {
+            db.set_meta("inner_key", "inner_value")?;
+            Err(flowforge_core::Error::Config("inner error".to_string()))
+        });
+        assert!(inner_result.is_err());
+        // Outer should still succeed
+        Ok(())
+    })
+    .unwrap();
+
+    assert_eq!(
+        db.get_meta("outer_key").unwrap(),
+        Some("outer_value".to_string())
+    );
+    // Inner was rolled back
+    assert_eq!(db.get_meta("inner_key").unwrap(), None);
+}
+
+#[test]
+fn test_nested_transaction_outer_rollback() {
+    let db = test_db();
+    let result: flowforge_core::Result<()> = db.with_transaction(|| {
+        db.set_meta("outer_key", "will_be_lost")?;
+        Err(flowforge_core::Error::Config("outer error".to_string()))
+    });
+    assert!(result.is_err());
+    assert_eq!(db.get_meta("outer_key").unwrap(), None);
+}
+
+// ── v5 Phase 7: Trust score bounds test ──
+
+#[test]
+fn test_trust_score_stays_bounded() {
+    let db = test_db();
+    let session_id = "trust-bounds-test";
+    db.create_trust_score(session_id, 0.5).unwrap();
+
+    // Push score high with many allows
+    for _ in 0..200 {
+        db.update_trust_score(session_id, &GateAction::Allow, 0.1)
+            .unwrap();
+    }
+    let score = db.get_trust_score(session_id).unwrap().unwrap().score;
+    assert!(score <= 1.0, "Trust score {score} exceeds 1.0");
+
+    // Push score low with many denials
+    for _ in 0..200 {
+        db.update_trust_score(session_id, &GateAction::Deny, -0.1)
+            .unwrap();
+    }
+    let score = db.get_trust_score(session_id).unwrap().unwrap().score;
+    assert!(score >= 0.0, "Trust score {score} below 0.0");
+}
+
+// ── v5 Phase 6: New indexes exist ──
+
+#[test]
+fn test_v6_indexes_exist() {
+    let db = test_db();
+    // These queries would be slow without indexes, but we just verify they don't error
+    db.conn
+        .execute_batch(
+            "SELECT * FROM hnsw_entries WHERE source_type = 'test' AND source_id = 'test' LIMIT 1",
+        )
+        .unwrap();
+    db.conn
+        .execute_batch("SELECT * FROM agent_sessions WHERE task_id = 'test' LIMIT 1")
+        .unwrap();
 }

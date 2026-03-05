@@ -57,7 +57,7 @@ impl<'a> ClusterManager<'a> {
         if dim == 0 {
             return Ok(ClusterResult {
                 cluster_count: 0,
-                outlier_count: 0,
+                outlier_count: vectors.len(),
             });
         }
 
@@ -118,10 +118,11 @@ impl<'a> ClusterManager<'a> {
                 *v /= count;
             }
 
-            // Compute cosine distances from centroid
+            // Compute cosine distances from centroid, filtering non-finite values
             let mut distances: Vec<f32> = member_indices
                 .iter()
                 .map(|&i| 1.0 - cosine_similarity(&centroid, &vectors[i].1))
+                .filter(|d| d.is_finite())
                 .collect();
             distances.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 
@@ -384,6 +385,27 @@ mod tests {
         let emb = HashEmbedder::new(128);
         let v = emb.embed("test");
         assert!(mgr.find_cluster(&v).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_recluster_zero_dim_reports_outliers() {
+        let db = setup_db();
+        let config = PatternsConfig {
+            clustering_min_points: 2,
+            ..Default::default()
+        };
+
+        // Store vectors with 0-dim by directly inserting empty blobs
+        // We need at least min_points vectors, but they have dim 0
+        db.store_vector("pattern_short", "p-empty-1", &[]).unwrap();
+        db.store_vector("pattern_short", "p-empty-2", &[]).unwrap();
+        db.store_vector("pattern_short", "p-empty-3", &[]).unwrap();
+
+        let mgr = ClusterManager::new(&db, &config);
+        let result = mgr.recluster().unwrap();
+        assert_eq!(result.cluster_count, 0);
+        // With dim==0, all vectors should be reported as outliers
+        assert_eq!(result.outlier_count, 3);
     }
 
     #[test]

@@ -22,13 +22,15 @@ pub struct AgentRouter {
 
 impl AgentRouter {
     /// Create a new router with the given weight configuration.
+    /// Non-finite weights are replaced with 0.0 to prevent NaN propagation.
     pub fn new(config: &RoutingConfig) -> Self {
+        let sanitize = |w: f64| if w.is_finite() { w } else { 0.0 };
         Self {
-            pattern_weight: config.pattern_weight,
-            capability_weight: config.capability_weight,
-            learned_weight: config.learned_weight,
-            priority_weight: config.priority_weight,
-            context_weight: config.context_weight,
+            pattern_weight: sanitize(config.pattern_weight),
+            capability_weight: sanitize(config.capability_weight),
+            learned_weight: sanitize(config.learned_weight),
+            priority_weight: sanitize(config.priority_weight),
+            context_weight: sanitize(config.context_weight),
         }
     }
 
@@ -58,11 +60,17 @@ impl AgentRouter {
                     .map(|ctx| self.compute_context_score(agent, ctx))
                     .unwrap_or(0.5);
 
-                let confidence = self.pattern_weight * pattern_score
+                let raw_confidence = self.pattern_weight * pattern_score
                     + self.capability_weight * capability_score
                     + self.learned_weight * learned_score
                     + self.priority_weight * priority_score
                     + self.context_weight * context_score;
+                // Clamp to [0.0, 1.0] and guard against NaN/Inf
+                let confidence = if raw_confidence.is_finite() {
+                    raw_confidence.clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
 
                 RoutingResult {
                     agent_name: agent.name.clone(),
@@ -486,6 +494,59 @@ mod tests {
         // Same confidence → sorted alphabetically
         assert_eq!(results[0].agent_name, "alpha");
         assert_eq!(results[1].agent_name, "beta");
+    }
+
+    #[test]
+    fn test_route_nan_weight_protection() {
+        // Router should handle NaN/Inf weights gracefully
+        let config = RoutingConfig {
+            pattern_weight: f64::NAN,
+            capability_weight: f64::INFINITY,
+            learned_weight: f64::NEG_INFINITY,
+            priority_weight: 0.5,
+            context_weight: 0.5,
+        };
+        let router = AgentRouter::new(&config);
+        // NaN/Inf weights should be sanitized to 0.0
+        assert_eq!(router.pattern_weight, 0.0);
+        assert_eq!(router.capability_weight, 0.0);
+        assert_eq!(router.learned_weight, 0.0);
+
+        let agent = make_agent("test", &["test"], &["test"], Priority::Normal);
+        let agents: Vec<&AgentDef> = vec![&agent];
+        let learned = HashMap::new();
+
+        let results = router.route("test task", &agents, &learned, None);
+        assert!(!results.is_empty());
+        let confidence = results[0].confidence;
+        assert!(
+            confidence.is_finite(),
+            "Confidence {confidence} is not finite"
+        );
+        assert!(
+            (0.0..=1.0).contains(&confidence),
+            "Confidence {confidence} out of [0.0, 1.0]"
+        );
+    }
+
+    #[test]
+    fn test_route_confidence_clamped() {
+        // With default weights summing to 1.0 and all scores at 1.0,
+        // confidence should be clamped to 1.0
+        let router = AgentRouter::default();
+        let agent = make_agent(
+            "perfect",
+            &["test", "code", "review"],
+            &["test"],
+            Priority::Critical,
+        );
+        let agents: Vec<&AgentDef> = vec![&agent];
+        let mut learned = HashMap::new();
+        learned.insert(("test".to_string(), "perfect".to_string()), 1.0);
+
+        let results = router.route("test", &agents, &learned, None);
+        assert!(results[0].confidence <= 1.0);
+        assert!(results[0].confidence >= 0.0);
     }
 
     #[test]

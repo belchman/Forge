@@ -81,12 +81,11 @@ pub fn run() -> flowforge_core::Result<()> {
             );
         }
 
-        // Update assignee on any in-progress work items assigned to this agent
-        if let Some(ref task_id) = input.common.session_id {
+        // Update assignee on the actual work item (not session_id)
+        if let Some(wid) = ctx.resolve_work_item_for_task(None) {
             let agent_name = input.agent_type.as_deref().unwrap_or(&agent_id).to_string();
-            let task_id = task_id.clone();
             ctx.with_db("update_work_item_assignee", |db| {
-                db.update_work_item_assignee(&task_id, &agent_name)
+                db.update_work_item_assignee(&wid, &agent_name)
             });
         }
     }

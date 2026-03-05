@@ -3,7 +3,7 @@ use flowforge_core::{Error, Result};
 use super::{is_transient_sqlite, MemoryDb, SqliteExt};
 
 /// Bump this whenever init_schema() changes (new tables, columns, indexes).
-pub(crate) const SCHEMA_VERSION: u32 = 5;
+pub(crate) const SCHEMA_VERSION: u32 = 6;
 
 impl MemoryDb {
     pub(crate) fn init_schema(&self) -> Result<()> {
@@ -368,6 +368,12 @@ impl MemoryDb {
              CREATE INDEX IF NOT EXISTS idx_gate_decisions_ts ON gate_decisions(timestamp);
              CREATE INDEX IF NOT EXISTS idx_patterns_short_last_used ON patterns_short(last_used);
              CREATE INDEX IF NOT EXISTS idx_patterns_long_last_used ON patterns_long(last_used);",
+        );
+
+        // Additional indexes (v6): support delete_vectors_for_source and get_agents_on_work_item
+        let _ = self.conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_hnsw_source ON hnsw_entries(source_type, source_id);
+             CREATE INDEX IF NOT EXISTS idx_agent_sessions_task ON agent_sessions(task_id);",
         );
 
         Ok(())

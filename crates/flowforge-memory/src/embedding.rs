@@ -23,7 +23,12 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     if norm_a == 0.0 || norm_b == 0.0 {
         0.0
     } else {
-        dot / (norm_a * norm_b)
+        let result = dot / (norm_a * norm_b);
+        if result.is_finite() {
+            result
+        } else {
+            0.0
+        }
     }
 }
 
@@ -301,6 +306,48 @@ mod tests {
         assert_eq!(emb.dimension(), 384);
         let v = emb.embed("test");
         assert_eq!(v.len(), 384);
+    }
+
+    #[test]
+    fn test_cosine_similarity_zero_vector() {
+        let zero = vec![0.0f32; 128];
+        let emb = HashEmbedder::new(128);
+        let v = emb.embed("hello");
+        assert_eq!(cosine_similarity(&zero, &v), 0.0);
+        assert_eq!(cosine_similarity(&v, &zero), 0.0);
+        assert_eq!(cosine_similarity(&zero, &zero), 0.0);
+    }
+
+    #[test]
+    fn test_cosine_similarity_nan_guard() {
+        // Craft vectors that could produce NaN through floating-point edge cases
+        let a = vec![f32::NAN; 4];
+        let b = vec![1.0f32; 4];
+        let result = cosine_similarity(&a, &b);
+        // Should return 0.0 instead of NaN
+        assert!(result.is_finite(), "Expected finite result, got {result}");
+    }
+
+    #[test]
+    fn test_cosine_similarity_inf_guard() {
+        let a = vec![f32::INFINITY; 4];
+        let b = vec![1.0f32; 4];
+        let result = cosine_similarity(&a, &b);
+        assert!(result.is_finite(), "Expected finite result, got {result}");
+    }
+
+    #[test]
+    fn test_cosine_similarity_mismatched_lengths() {
+        let a = vec![1.0f32; 3];
+        let b = vec![1.0f32; 5];
+        assert_eq!(cosine_similarity(&a, &b), 0.0);
+    }
+
+    #[test]
+    fn test_cosine_similarity_empty() {
+        let a: Vec<f32> = vec![];
+        let b: Vec<f32> = vec![];
+        assert_eq!(cosine_similarity(&a, &b), 0.0);
     }
 
     #[test]

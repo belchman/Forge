@@ -140,7 +140,8 @@ impl<'a> PatternStore<'a> {
                 continue;
             }
             let multiplier = self.decay_multiplier(p.embedding_id);
-            let decayed = p.confidence - (self.config.decay_rate_per_hour * hours * multiplier);
+            let decayed =
+                (p.confidence - (self.config.decay_rate_per_hour * hours * multiplier)).max(0.0);
             if decayed < 0.1 {
                 self.db.delete_pattern_short(&p.id)?;
                 self.db.delete_vectors_for_source("pattern_short", &p.id)?;

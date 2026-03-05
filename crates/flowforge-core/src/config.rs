@@ -565,6 +565,41 @@ impl FlowForgeConfig {
                 "min_injection_similarity must be in 0.0..=1.0".to_string(),
             ));
         }
+        if p.promotion_min_confidence <= 0.0 || p.promotion_min_confidence > 1.0 {
+            return Err(crate::Error::Config(
+                "promotion_min_confidence must be in (0.0, 1.0]".to_string(),
+            ));
+        }
+        if p.promotion_min_usage == 0 {
+            return Err(crate::Error::Config(
+                "promotion_min_usage must be > 0".to_string(),
+            ));
+        }
+        if p.cluster_decay_active_factor < 0.0 {
+            return Err(crate::Error::Config(
+                "cluster_decay_active_factor must be >= 0.0".to_string(),
+            ));
+        }
+        if p.cluster_decay_isolated_factor < 0.0 {
+            return Err(crate::Error::Config(
+                "cluster_decay_isolated_factor must be >= 0.0".to_string(),
+            ));
+        }
+        if p.ab_test_holdout_rate < 0.0 || p.ab_test_holdout_rate > 1.0 {
+            return Err(crate::Error::Config(
+                "ab_test_holdout_rate must be in [0.0, 1.0]".to_string(),
+            ));
+        }
+
+        // Work-tracking backend
+        if !["auto", "kanbus", "beads", "claude_tasks", "flowforge"]
+            .contains(&self.work_tracking.backend.as_str())
+        {
+            return Err(crate::Error::Config(format!(
+                "work_tracking.backend must be one of: auto, kanbus, beads, claude_tasks, flowforge; got '{}'",
+                self.work_tracking.backend
+            )));
+        }
 
         // Guidance ranges
         if self.guidance.trust_ask_threshold < 0.0 || self.guidance.trust_ask_threshold > 1.0 {
@@ -903,6 +938,72 @@ log_level = "debug"
         config.work_tracking.work_stealing.stale_min_progress = -1;
         let err = config.validate().unwrap_err().to_string();
         assert!(err.contains("stale_min_progress"), "got: {err}");
+    }
+
+    // ── v5 Phase 4: New config validation tests ──
+
+    #[test]
+    fn test_validate_promotion_min_confidence_range() {
+        let mut config = FlowForgeConfig::default();
+        config.patterns.promotion_min_confidence = 0.0; // must be > 0
+        assert!(config.validate().is_err());
+        config.patterns.promotion_min_confidence = -0.5;
+        assert!(config.validate().is_err());
+        config.patterns.promotion_min_confidence = 1.1;
+        assert!(config.validate().is_err());
+        config.patterns.promotion_min_confidence = 1.0; // valid
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_promotion_min_usage_must_be_positive() {
+        let mut config = FlowForgeConfig::default();
+        config.patterns.promotion_min_usage = 0;
+        assert!(config.validate().is_err());
+        config.patterns.promotion_min_usage = 1; // valid
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_cluster_decay_factors() {
+        let mut config = FlowForgeConfig::default();
+        config.patterns.cluster_decay_active_factor = -0.1;
+        assert!(config.validate().is_err());
+        config.patterns.cluster_decay_active_factor = 0.0; // valid edge
+        assert!(config.validate().is_ok());
+
+        config.patterns.cluster_decay_isolated_factor = -1.0;
+        assert!(config.validate().is_err());
+        config.patterns.cluster_decay_isolated_factor = 0.0; // valid edge
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_ab_test_holdout_rate() {
+        let mut config = FlowForgeConfig::default();
+        config.patterns.ab_test_holdout_rate = -0.1;
+        assert!(config.validate().is_err());
+        config.patterns.ab_test_holdout_rate = 1.5;
+        assert!(config.validate().is_err());
+        config.patterns.ab_test_holdout_rate = 0.5; // valid
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_work_tracking_backend() {
+        let mut config = FlowForgeConfig::default();
+        config.work_tracking.backend = "invalid".to_string();
+        let err = config.validate().unwrap_err().to_string();
+        assert!(err.contains("backend"), "got: {err}");
+
+        for valid in &["auto", "kanbus", "beads", "claude_tasks", "flowforge"] {
+            config.work_tracking.backend = valid.to_string();
+            assert!(
+                config.validate().is_ok(),
+                "Expected '{}' to be valid",
+                valid
+            );
+        }
     }
 
     #[test]

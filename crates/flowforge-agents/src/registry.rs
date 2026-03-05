@@ -49,6 +49,14 @@ impl AgentRegistry {
                 global_dir.display()
             );
             for agent in globals {
+                if let Some(existing) = registry.agents.get(&agent.name) {
+                    if matches!(existing.source, AgentSource::BuiltIn) {
+                        eprintln!(
+                            "[FlowForge] Agent '{}' overrides built-in (source: global)",
+                            agent.name
+                        );
+                    }
+                }
                 registry.agents.insert(agent.name.clone(), agent);
             }
         }
@@ -68,6 +76,14 @@ impl AgentRegistry {
                     dir.display()
                 );
                 for agent in project_agents {
+                    if let Some(existing) = registry.agents.get(&agent.name) {
+                        if matches!(existing.source, AgentSource::BuiltIn) {
+                            eprintln!(
+                                "[FlowForge] Agent '{}' overrides built-in (source: project)",
+                                agent.name
+                            );
+                        }
+                    }
                     registry.agents.insert(agent.name.clone(), agent);
                 }
             }
@@ -84,6 +100,14 @@ impl AgentRegistry {
                             if let Ok(mut agent) = loader::parse_agent_def(&content) {
                                 agent.source =
                                     AgentSource::Plugin(plugin.manifest.plugin.name.clone());
+                                if let Some(existing) = registry.agents.get(&agent.name) {
+                                    if matches!(existing.source, AgentSource::BuiltIn) {
+                                        eprintln!(
+                                            "[FlowForge] Agent '{}' overrides built-in (source: plugin:{})",
+                                            agent.name, plugin.manifest.plugin.name
+                                        );
+                                    }
+                                }
                                 registry.agents.insert(agent.name.clone(), agent);
                             }
                         }

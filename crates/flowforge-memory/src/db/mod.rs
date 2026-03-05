@@ -66,23 +66,48 @@ impl<T> SqliteExt<T> for std::result::Result<T, rusqlite::Error> {
 
 pub struct MemoryDb {
     pub(crate) conn: Connection,
+    /// Track transaction nesting depth for savepoint-based nesting.
+    txn_depth: std::cell::Cell<u32>,
 }
 
 impl MemoryDb {
     /// Execute a closure inside a SQLite transaction (BEGIN/COMMIT).
+    /// Supports nesting: depth 0 uses BEGIN/COMMIT, depth > 0 uses SAVEPOINT/RELEASE.
     /// Automatically rolls back on error.
     pub fn with_transaction<T, F>(&self, f: F) -> Result<T>
     where
         F: FnOnce() -> Result<T>,
     {
-        self.conn.execute_batch("BEGIN").sq()?;
+        let depth = self.txn_depth.get();
+
+        if depth == 0 {
+            self.conn.execute_batch("BEGIN").sq()?;
+        } else {
+            self.conn
+                .execute_batch(&format!("SAVEPOINT sp_{depth}"))
+                .sq()?;
+        }
+        self.txn_depth.set(depth + 1);
+
         match f() {
             Ok(val) => {
-                self.conn.execute_batch("COMMIT").sq()?;
+                self.txn_depth.set(depth);
+                if depth == 0 {
+                    self.conn.execute_batch("COMMIT").sq()?;
+                } else {
+                    self.conn
+                        .execute_batch(&format!("RELEASE sp_{depth}"))
+                        .sq()?;
+                }
                 Ok(val)
             }
             Err(e) => {
-                let _ = self.conn.execute_batch("ROLLBACK");
+                self.txn_depth.set(depth);
+                if depth == 0 {
+                    let _ = self.conn.execute_batch("ROLLBACK");
+                } else {
+                    let _ = self.conn.execute_batch(&format!("ROLLBACK TO sp_{depth}"));
+                }
                 Err(e)
             }
         }
@@ -107,7 +132,10 @@ impl MemoryDb {
         )
         .sq()?;
 
-        let db = Self { conn };
+        let db = Self {
+            conn,
+            txn_depth: std::cell::Cell::new(0),
+        };
 
         // Skip full DDL if schema is already at the current version
         let stored_version: Option<u32> = db

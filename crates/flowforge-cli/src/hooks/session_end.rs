@@ -156,11 +156,13 @@ pub fn run() -> Result<()> {
         });
     }
 
-    // Run pattern consolidation
+    // Run pattern consolidation (wrapped in transaction for atomicity)
     if ctx.config.hooks.learning {
         ctx.with_db("pattern_consolidation", |db| {
-            let store = flowforge_memory::PatternStore::new(db, &ctx.config.patterns);
-            store.consolidate()
+            db.with_transaction(|| {
+                let store = flowforge_memory::PatternStore::new(db, &ctx.config.patterns);
+                store.consolidate()
+            })
         });
     }
 

@@ -328,6 +328,61 @@ impl WorkBackend for BeadsBackend {
         Ok(())
     }
 
+    fn update_item(&self, external_id: &str, item: &WorkItem) -> Result<()> {
+        if item.status == "completed" {
+            let result = std::process::Command::new("bd")
+                .arg("close")
+                .arg(external_id)
+                .output();
+            if let Err(e) = result {
+                warn!("bd close failed: {e}");
+            }
+            return Ok(());
+        }
+
+        let mut cmd = std::process::Command::new("bd");
+        cmd.arg("update").arg(external_id);
+        cmd.arg("--title").arg(&item.title);
+        cmd.arg("--status").arg(&item.status);
+        cmd.arg("--priority")
+            .arg(item.priority.clamp(0, 4).to_string());
+        if let Some(ref desc) = item.description {
+            cmd.arg("--description").arg(desc);
+        }
+        if let Some(ref assignee) = item.assignee {
+            cmd.arg("--assignee").arg(assignee);
+        }
+        if let Some(ref parent) = item.parent_id {
+            cmd.arg("--parent").arg(parent);
+        }
+
+        match cmd.output() {
+            Ok(o) if !o.status.success() => {
+                warn!("bd update failed: {}", String::from_utf8_lossy(&o.stderr));
+            }
+            Err(e) => warn!("bd update failed: {e}"),
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn add_comment(&self, external_id: &str, _author: &str, text: &str) -> Result<()> {
+        match std::process::Command::new("bd")
+            .arg("comments")
+            .arg("add")
+            .arg(external_id)
+            .arg(text)
+            .output()
+        {
+            Ok(o) if !o.status.success() => {
+                warn!("bd comment failed: {}", String::from_utf8_lossy(&o.stderr));
+            }
+            Err(e) => warn!("bd comment failed: {e}"),
+            _ => {}
+        }
+        Ok(())
+    }
+
     fn sync_inbound(&self, db: &dyn WorkDb, _config: &WorkTrackingConfig) -> Result<u32> {
         let beads_file = Path::new(".beads/issues.jsonl");
         if !beads_file.exists() {

@@ -201,6 +201,9 @@ pub struct PatternsConfig {
     /// effectiveness score exceeds this are blocked from promotion.
     /// Range: 0.0..1.0. Default: 0.3.
     pub promotion_failure_correlation_max: f64,
+    /// Maximum number of short-term patterns to consider during deduplication.
+    /// Limits the O(n^2) comparison to the newest patterns. Default: 1000.
+    pub max_dedup_patterns: usize,
 }
 
 impl Default for PatternsConfig {
@@ -227,6 +230,7 @@ impl Default for PatternsConfig {
             demotion_min_feedback: 5,
             demotion_failure_ratio: 0.6,
             promotion_failure_correlation_max: 0.3,
+            max_dedup_patterns: 1000,
         }
     }
 }
@@ -419,6 +423,9 @@ pub struct GuidanceConfig {
     /// Trust score threshold above which gates auto-allow instead of asking.
     /// Range: 0.0..1.0. Default: 0.8.
     pub trust_ask_threshold: f64,
+    /// Trust score threshold below which all tool uses require confirmation,
+    /// even when all gates pass. Range: 0.0..1.0. Default: 0.1.
+    pub trust_deny_threshold: f64,
     /// Trust score decay rate per hour of inactivity. Default: 0.02.
     pub trust_decay_per_hour: f64,
     /// File paths that the file-scope gate protects from modification. Default: [].
@@ -442,6 +449,7 @@ impl Default for GuidanceConfig {
             max_diff_lines: 500,
             trust_initial_score: 0.5,
             trust_ask_threshold: 0.8,
+            trust_deny_threshold: 0.1,
             trust_decay_per_hour: 0.02,
             protected_paths: vec![],
             custom_rules: vec![],
@@ -605,6 +613,16 @@ impl FlowForgeConfig {
         if self.guidance.trust_ask_threshold < 0.0 || self.guidance.trust_ask_threshold > 1.0 {
             return Err(crate::Error::Config(
                 "trust_ask_threshold must be in 0.0..=1.0".to_string(),
+            ));
+        }
+        if self.guidance.trust_deny_threshold < 0.0 || self.guidance.trust_deny_threshold > 1.0 {
+            return Err(crate::Error::Config(
+                "trust_deny_threshold must be in 0.0..=1.0".to_string(),
+            ));
+        }
+        if self.guidance.trust_deny_threshold >= self.guidance.trust_ask_threshold {
+            return Err(crate::Error::Config(
+                "trust_deny_threshold must be < trust_ask_threshold".to_string(),
             ));
         }
         if self.guidance.max_diff_lines < 1 {

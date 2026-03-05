@@ -183,8 +183,7 @@ impl MemoryDb {
     }
 
     pub fn delete_work_item(&self, id: &str) -> Result<()> {
-        self.conn.execute_batch("BEGIN").sq()?;
-        let result = (|| {
+        self.with_transaction(|| {
             self.conn
                 .execute(
                     "DELETE FROM work_events WHERE work_item_id = ?1",
@@ -195,13 +194,7 @@ impl MemoryDb {
                 .execute("DELETE FROM work_items WHERE id = ?1", params![id])
                 .sq()?;
             Ok(())
-        })();
-        if result.is_ok() {
-            self.conn.execute_batch("COMMIT").sq()?;
-        } else {
-            self.conn.execute_batch("ROLLBACK").sq()?;
-        }
-        result
+        })
     }
 
     /// Find a work item by title, preferring in-progress items.

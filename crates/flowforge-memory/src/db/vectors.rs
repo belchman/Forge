@@ -145,11 +145,13 @@ impl MemoryDb {
     }
 
     pub fn delete_all_clusters(&self) -> Result<()> {
-        self.conn
-            .execute("UPDATE hnsw_entries SET cluster_id = NULL", [])
-            .sq()?;
-        self.conn.execute("DELETE FROM pattern_clusters", []).sq()?;
-        Ok(())
+        self.with_transaction(|| {
+            self.conn
+                .execute("UPDATE hnsw_entries SET cluster_id = NULL", [])
+                .sq()?;
+            self.conn.execute("DELETE FROM pattern_clusters", []).sq()?;
+            Ok(())
+        })
     }
 
     pub fn set_vector_cluster_id(&self, vector_id: i64, cluster_id: Option<i64>) -> Result<()> {

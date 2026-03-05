@@ -141,18 +141,27 @@ pub fn update_status(
     };
     db.record_work_event(&event)?;
 
-    // Sync status to external backend
+    // Sync to external backend with full field update + comment
     let (backend_name, backend) = resolve_backend(config);
-    if let Some(item) = &old_item {
-        if let Some(b) = backend {
-            if let Some(ref ext_id) = item.external_id {
-                b.update_status(ext_id, new_status)?;
+    if let Some(b) = backend {
+        // Re-read the item after status update for accurate field sync
+        if let Some(updated_item) = db.get_work_item(id)? {
+            if let Some(ref ext_id) = updated_item.external_id {
+                b.update_item(ext_id, &updated_item)?;
+                // Add a comment recording the status change
+                let comment = format!(
+                    "{} → {} (by {})",
+                    old_item.as_ref().map(|i| i.status.as_str()).unwrap_or("?"),
+                    new_status,
+                    actor
+                );
+                let _ = b.add_comment(ext_id, "FlowForge", &comment);
             }
-            // Dual-write to Claude Tasks
-            sync_status_to_claude_tasks(&item.id, new_status, config)?;
-        } else if backend_name == "claude_tasks" {
-            sync_status_to_claude_tasks(&item.id, new_status, config)?;
         }
+        // Dual-write to Claude Tasks
+        sync_status_to_claude_tasks(id, new_status, config)?;
+    } else if backend_name == "claude_tasks" {
+        sync_status_to_claude_tasks(id, new_status, config)?;
     }
 
     Ok(())
@@ -181,6 +190,70 @@ pub fn get_events(db: &dyn WorkDb, work_item_id: &str, limit: usize) -> Result<V
 /// Get recent events across all work items.
 pub fn get_recent_events(db: &dyn WorkDb, limit: usize) -> Result<Vec<WorkEvent>> {
     db.get_recent_work_events(limit)
+}
+
+/// Get or create a work item from a Claude task.
+/// Deduplicates by checking `external_id` (Claude task ID) first, then title match.
+/// Returns the work item ID.
+pub fn get_or_create_from_claude_task(
+    db: &dyn WorkDb,
+    config: &WorkTrackingConfig,
+    claude_task_id: Option<&str>,
+    subject: &str,
+    description: Option<&str>,
+) -> Result<String> {
+    // 1. Check by external_id (Claude task ID)
+    if let Some(ext_id) = claude_task_id {
+        if let Some(existing) = db.get_work_item_by_external_id(ext_id)? {
+            return Ok(existing.id);
+        }
+    }
+
+    // 2. Check by title match
+    let filter = WorkFilter {
+        status: None,
+        ..Default::default()
+    };
+    let items = db.list_work_items(&filter)?;
+    if let Some(existing) = items
+        .iter()
+        .find(|i| i.title == subject && i.status != "completed")
+    {
+        // Link the external_id if we have one and it's not set
+        if let (Some(ext_id), None) = (claude_task_id, &existing.external_id) {
+            let _ = db.update_work_item_external_id(&existing.id, ext_id);
+        }
+        return Ok(existing.id.clone());
+    }
+
+    // 3. Create new work item
+    let now = chrono::Utc::now();
+    let item = WorkItem {
+        id: uuid::Uuid::new_v4().to_string(),
+        external_id: claude_task_id.map(String::from),
+        backend: "claude_tasks".to_string(),
+        item_type: "task".to_string(),
+        title: subject.to_string(),
+        description: description.map(String::from),
+        status: "pending".to_string(),
+        assignee: None,
+        parent_id: None,
+        priority: 2,
+        labels: vec![],
+        created_at: now,
+        updated_at: now,
+        completed_at: None,
+        session_id: None,
+        metadata: None,
+        claimed_by: None,
+        claimed_at: None,
+        last_heartbeat: None,
+        progress: 0,
+        stealable: false,
+    };
+
+    create_item(db, config, &item)?;
+    Ok(item.id)
 }
 
 /// Push FlowForge-only items to the active external backend.

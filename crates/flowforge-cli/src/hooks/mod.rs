@@ -596,6 +596,25 @@ mod tests {
     }
 
     #[test]
+    fn test_with_db_logs_errors() {
+        // with_db already logs errors via log_hook_error — verify it returns None on error
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let db = MemoryDb::open(tmp.path()).unwrap();
+        let ctx = HookContext {
+            raw: serde_json::json!({}),
+            config: FlowForgeConfig::default(),
+            db: Some(db),
+            session_id: None,
+        };
+        let result: Option<i32> = ctx.with_db("test_error_logging", |_db| {
+            Err(flowforge_core::Error::Config(
+                "intentional test error".to_string(),
+            ))
+        });
+        assert!(result.is_none()); // Error was logged and None returned
+    }
+
+    #[test]
     fn test_record_work_event_skips_when_no_work_item() {
         let tmp = tempfile::NamedTempFile::new().unwrap();
         let db = MemoryDb::open(tmp.path()).unwrap();

@@ -43,6 +43,14 @@ impl MemoryDb {
                     params![ts, id],
                 )
                 .sq()?;
+            // Finalize any trajectories still in recording status
+            self.conn
+                .execute(
+                    "UPDATE trajectories SET status = 'completed', ended_at = ?1
+                     WHERE session_id = ?2 AND status = 'recording'",
+                    params![ts, id],
+                )
+                .sq()?;
             Ok(())
         })
     }

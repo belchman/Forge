@@ -112,6 +112,17 @@ impl GuidanceEngine {
             }
         }
 
+        // Baseline trust check: if trust is very low, ask even when all gates pass
+        if trust < self.config.trust_deny_threshold {
+            return (
+                GateAction::Ask,
+                format!(
+                    "low session trust ({trust:.2} < {:.2})",
+                    self.config.trust_deny_threshold
+                ),
+                None,
+            );
+        }
         (GateAction::Allow, "all gates passed".to_string(), None)
     }
 

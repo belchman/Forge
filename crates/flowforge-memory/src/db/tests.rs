@@ -8,7 +8,7 @@ use flowforge_core::{
     SessionInfo, WorkEvent, WorkFilter, WorkItem,
 };
 
-use super::helpers::{blob_to_vector, vector_to_blob};
+use super::helpers::{blob_to_vector, parse_datetime, vector_to_blob};
 use super::schema::SCHEMA_VERSION;
 use super::{MemoryDb, SqliteExt};
 
@@ -1295,6 +1295,11 @@ fn test_trajectory_list_with_filters() {
 fn test_trajectory_link_work_item() {
     use flowforge_core::trajectory::{Trajectory, TrajectoryStatus};
     let db = test_db();
+
+    // Create work item first (required by FK constraint on trajectories.work_item_id)
+    let item = test_work_item("wi-123", "Link target");
+    db.create_work_item(&item).unwrap();
+
     let traj = Trajectory {
         id: "traj-link".to_string(),
         session_id: "s".to_string(),
@@ -1532,8 +1537,8 @@ fn test_helpers_module_roundtrip() {
 }
 
 #[test]
-fn test_schema_version_is_6() {
-    assert_eq!(SCHEMA_VERSION, 6);
+fn test_schema_version_is_7() {
+    assert_eq!(SCHEMA_VERSION, 7);
 }
 
 #[test]
@@ -2222,4 +2227,524 @@ fn test_v6_indexes_exist() {
     db.conn
         .execute_batch("SELECT * FROM agent_sessions WHERE task_id = 'test' LIMIT 1")
         .unwrap();
+}
+
+// ── v6 Phase 2: Transaction migration tests ──
+
+#[test]
+fn test_delete_work_item_uses_with_transaction() {
+    let db = test_db();
+    let item = test_work_item("wi-txn-del", "Delete via transaction");
+    db.create_work_item(&item).unwrap();
+
+    // Record a work event so we test the cascading delete
+    let event = WorkEvent {
+        id: 0,
+        work_item_id: "wi-txn-del".to_string(),
+        event_type: "status_change".to_string(),
+        old_value: None,
+        new_value: None,
+        actor: None,
+        timestamp: Utc::now(),
+    };
+    db.record_work_event(&event).unwrap();
+
+    // Delete should succeed atomically
+    db.delete_work_item("wi-txn-del").unwrap();
+    assert!(db.get_work_item("wi-txn-del").unwrap().is_none());
+
+    // Verify it works inside a wrapping transaction (nesting via savepoints)
+    let item2 = test_work_item("wi-txn-del-2", "Nested delete");
+    db.create_work_item(&item2).unwrap();
+    db.with_transaction(|| {
+        db.delete_work_item("wi-txn-del-2")?;
+        Ok(())
+    })
+    .unwrap();
+    assert!(db.get_work_item("wi-txn-del-2").unwrap().is_none());
+}
+
+#[test]
+fn test_delete_all_clusters_atomic() {
+    let db = test_db();
+
+    // Store some vectors and create a cluster
+    let cluster = flowforge_core::PatternCluster {
+        id: 0,
+        centroid: vec![1.0; 128],
+        member_count: 3,
+        p95_distance: 0.5,
+        avg_confidence: 0.8,
+        created_at: Utc::now(),
+        last_recomputed: Utc::now(),
+    };
+    let cid = db.store_cluster(&cluster).unwrap();
+
+    // Store a vector and assign it to the cluster
+    let vid = db
+        .store_vector("pattern_short", "test-pattern-1", &vec![0.5; 128])
+        .unwrap();
+    db.set_vector_cluster_id(vid, Some(cid)).unwrap();
+
+    // Verify cluster exists
+    assert!(db.get_cluster(cid).unwrap().is_some());
+    let cluster_id = db.get_vector_cluster_id(vid).unwrap();
+    assert!(cluster_id.is_some());
+
+    // Delete all clusters atomically
+    db.delete_all_clusters().unwrap();
+
+    // Cluster should be gone and vector's cluster_id should be NULL
+    assert!(db.get_cluster(cid).unwrap().is_none());
+    let cluster_id = db.get_vector_cluster_id(vid).unwrap();
+    assert!(cluster_id.is_none());
+}
+
+#[test]
+fn test_batch_effectiveness_scores() {
+    let db = test_db();
+
+    // Store two short-term patterns manually
+    use flowforge_core::ShortTermPattern;
+    let p1 = ShortTermPattern {
+        id: "eff-batch-1".to_string(),
+        content: "pattern one".to_string(),
+        category: "test".to_string(),
+        confidence: 0.5,
+        usage_count: 1,
+        created_at: Utc::now(),
+        last_used: Utc::now(),
+        embedding_id: None,
+    };
+    let p2 = ShortTermPattern {
+        id: "eff-batch-2".to_string(),
+        content: "pattern two".to_string(),
+        category: "test".to_string(),
+        confidence: 0.5,
+        usage_count: 1,
+        created_at: Utc::now(),
+        last_used: Utc::now(),
+        embedding_id: None,
+    };
+    db.store_pattern_short(&p1).unwrap();
+    db.store_pattern_short(&p2).unwrap();
+
+    // Record effectiveness data for pattern 1
+    db.record_pattern_effectiveness("eff-batch-1", "sess-1", "success", 0.8)
+        .unwrap();
+    db.record_pattern_effectiveness("eff-batch-1", "sess-2", "success", 0.9)
+        .unwrap();
+    db.recompute_pattern_effectiveness("eff-batch-1").unwrap();
+
+    // Batch fetch
+    let ids = vec![
+        "eff-batch-1".to_string(),
+        "eff-batch-2".to_string(),
+        "eff-batch-missing".to_string(),
+    ];
+    let scores = db.get_effectiveness_scores_batch(&ids).unwrap();
+
+    // Pattern 1 should have 2 samples
+    assert!(scores.contains_key("eff-batch-1"));
+    assert_eq!(scores["eff-batch-1"].samples, 2);
+    assert!(scores["eff-batch-1"].score > 0.0);
+
+    // Pattern 2 should have 0 samples (default)
+    assert!(scores.contains_key("eff-batch-2"));
+    assert_eq!(scores["eff-batch-2"].samples, 0);
+
+    // Missing pattern should not be in the map
+    assert!(!scores.contains_key("eff-batch-missing"));
+
+    // Empty input returns empty map
+    let empty = db
+        .get_effectiveness_scores_batch(&Vec::<String>::new())
+        .unwrap();
+    assert!(empty.is_empty());
+}
+
+// ── v7 Phase 6: FK constraints on trajectories and context_injections ──
+
+#[test]
+fn test_trajectory_fk_on_delete_set_null() {
+    let db = test_db();
+
+    // Create a work item
+    let mut item = test_work_item("wi-fk-test", "FK Test");
+    item.status = "in_progress".to_string();
+    db.create_work_item(&item).unwrap();
+
+    // Insert trajectory referencing the work item
+    let now = Utc::now().to_rfc3339();
+    db.conn
+        .execute(
+            "INSERT INTO trajectories (id, session_id, work_item_id, status, started_at)
+             VALUES ('traj-fk', 'sess-1', 'wi-fk-test', 'recording', ?1)",
+            params![now],
+        )
+        .unwrap();
+
+    // Delete the work item — trajectory.work_item_id should become NULL (ON DELETE SET NULL)
+    db.delete_work_item("wi-fk-test").unwrap();
+
+    let work_item_id: Option<String> = db
+        .conn
+        .query_row(
+            "SELECT work_item_id FROM trajectories WHERE id = 'traj-fk'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(
+        work_item_id.is_none(),
+        "work_item_id should be NULL after work item deletion"
+    );
+}
+
+#[test]
+fn test_context_injection_fk_on_delete_set_null() {
+    let db = test_db();
+
+    // Insert a trajectory
+    let now = Utc::now().to_rfc3339();
+    db.conn
+        .execute(
+            "INSERT INTO trajectories (id, session_id, status, started_at)
+             VALUES ('traj-ci-fk', 'sess-1', 'recording', ?1)",
+            params![now],
+        )
+        .unwrap();
+
+    // Insert context_injection referencing the trajectory
+    db.conn
+        .execute(
+            "INSERT INTO context_injections (session_id, trajectory_id, injection_type, timestamp)
+             VALUES ('sess-1', 'traj-ci-fk', 'pattern', ?1)",
+            params![now],
+        )
+        .unwrap();
+
+    // Delete the trajectory — context_injections.trajectory_id should become NULL
+    db.conn
+        .execute("DELETE FROM trajectories WHERE id = 'traj-ci-fk'", [])
+        .unwrap();
+
+    let traj_id: Option<String> = db
+        .conn
+        .query_row(
+            "SELECT trajectory_id FROM context_injections WHERE session_id = 'sess-1'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(
+        traj_id.is_none(),
+        "trajectory_id should be NULL after trajectory deletion"
+    );
+}
+
+// ── v6 Phase 3: Data Integrity Guards ──
+
+#[test]
+fn test_parse_datetime_returns_epoch_on_corrupt() {
+    let result = parse_datetime("not-a-date".to_string());
+    assert_eq!(result.timestamp(), 0); // Unix epoch
+}
+
+#[test]
+fn test_blob_to_vector_warns_on_misaligned() {
+    // 5 bytes = 1 f32 + 1 extra byte
+    let blob = vec![0u8; 5];
+    let result = blob_to_vector(&blob);
+    assert_eq!(result.len(), 1); // Only 1 complete f32
+}
+
+#[test]
+fn test_end_session_finalizes_trajectories() {
+    let db = test_db();
+    let now = chrono::Utc::now();
+    let session = SessionInfo {
+        id: "sess-traj-test".to_string(),
+        started_at: now,
+        ended_at: None,
+        cwd: ".".to_string(),
+        edits: 0,
+        commands: 0,
+        summary: None,
+        transcript_path: None,
+    };
+    db.create_session(&session).unwrap();
+    // Insert a recording trajectory directly
+    db.conn
+        .execute(
+            "INSERT INTO trajectories (id, session_id, status, started_at) VALUES (?1, ?2, 'recording', ?3)",
+            params!["traj-1", "sess-traj-test", now.to_rfc3339()],
+        )
+        .unwrap();
+    // End the session
+    db.end_session("sess-traj-test", now).unwrap();
+    // Verify trajectory is now completed
+    let status: String = db
+        .conn
+        .query_row(
+            "SELECT status FROM trajectories WHERE id = 'traj-1'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(status, "completed");
+}
+
+// ── get_agent_sessions_recursive tests ──
+
+#[test]
+fn test_get_agent_sessions_recursive_returns_direct_children() {
+    use flowforge_core::{AgentSession, AgentSessionStatus};
+    let db = test_db();
+
+    // Create parent session
+    let session = SessionInfo {
+        id: "sess-recursive".to_string(),
+        started_at: Utc::now(),
+        ended_at: None,
+        cwd: "/tmp".to_string(),
+        edits: 0,
+        commands: 0,
+        summary: None,
+        transcript_path: None,
+    };
+    db.create_session(&session).unwrap();
+
+    // Create direct child agent
+    let agent = AgentSession {
+        id: "agent-direct".to_string(),
+        parent_session_id: "sess-recursive".to_string(),
+        agent_id: "ag-direct".to_string(),
+        agent_type: "general".to_string(),
+        status: AgentSessionStatus::Active,
+        started_at: Utc::now(),
+        ended_at: None,
+        edits: 0,
+        commands: 0,
+        task_id: None,
+        transcript_path: None,
+    };
+    db.create_agent_session(&agent).unwrap();
+
+    let results = db.get_agent_sessions_recursive("sess-recursive").unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].agent_id, "ag-direct");
+}
+
+#[test]
+fn test_get_agent_sessions_recursive_includes_grandchildren() {
+    use flowforge_core::{AgentSession, AgentSessionStatus};
+    let db = test_db();
+
+    // Create parent session
+    let session = SessionInfo {
+        id: "sess-team".to_string(),
+        started_at: Utc::now(),
+        ended_at: None,
+        cwd: "/tmp".to_string(),
+        edits: 0,
+        commands: 0,
+        summary: None,
+        transcript_path: None,
+    };
+    db.create_session(&session).unwrap();
+
+    // Create team lead agent (direct child)
+    let team_lead = AgentSession {
+        id: "agent-lead".to_string(),
+        parent_session_id: "sess-team".to_string(),
+        agent_id: "ag-lead".to_string(),
+        agent_type: "general".to_string(),
+        status: AgentSessionStatus::Active,
+        started_at: Utc::now(),
+        ended_at: None,
+        edits: 0,
+        commands: 0,
+        task_id: None,
+        transcript_path: None,
+    };
+    db.create_agent_session(&team_lead).unwrap();
+
+    // Create sub-agent spawned by team lead (grandchild)
+    let sub_agent = AgentSession {
+        id: "agent-sub".to_string(),
+        parent_session_id: "ag-lead".to_string(), // parent is team lead's agent_id
+        agent_id: "ag-sub".to_string(),
+        agent_type: "Explore".to_string(),
+        status: AgentSessionStatus::Active,
+        started_at: Utc::now(),
+        ended_at: None,
+        edits: 0,
+        commands: 0,
+        task_id: None,
+        transcript_path: None,
+    };
+    db.create_agent_session(&sub_agent).unwrap();
+
+    // Recursive query from parent session should find both
+    let results = db.get_agent_sessions_recursive("sess-team").unwrap();
+    assert_eq!(results.len(), 2);
+
+    let agent_ids: Vec<&str> = results.iter().map(|a| a.agent_id.as_str()).collect();
+    assert!(agent_ids.contains(&"ag-lead"));
+    assert!(agent_ids.contains(&"ag-sub"));
+}
+
+#[test]
+fn test_get_agent_sessions_recursive_skips_ended_grandchildren() {
+    use flowforge_core::{AgentSession, AgentSessionStatus};
+    let db = test_db();
+
+    let session = SessionInfo {
+        id: "sess-skip".to_string(),
+        started_at: Utc::now(),
+        ended_at: None,
+        cwd: "/tmp".to_string(),
+        edits: 0,
+        commands: 0,
+        summary: None,
+        transcript_path: None,
+    };
+    db.create_session(&session).unwrap();
+
+    // Ended team lead — should not recurse into its children
+    let ended_lead = AgentSession {
+        id: "agent-ended-lead".to_string(),
+        parent_session_id: "sess-skip".to_string(),
+        agent_id: "ag-ended-lead".to_string(),
+        agent_type: "general".to_string(),
+        status: AgentSessionStatus::Completed,
+        started_at: Utc::now(),
+        ended_at: Some(Utc::now()),
+        edits: 0,
+        commands: 0,
+        task_id: None,
+        transcript_path: None,
+    };
+    db.create_agent_session(&ended_lead).unwrap();
+
+    // Sub-agent of ended lead
+    let sub = AgentSession {
+        id: "agent-hidden-sub".to_string(),
+        parent_session_id: "ag-ended-lead".to_string(),
+        agent_id: "ag-hidden-sub".to_string(),
+        agent_type: "Explore".to_string(),
+        status: AgentSessionStatus::Active,
+        started_at: Utc::now(),
+        ended_at: None,
+        edits: 0,
+        commands: 0,
+        task_id: None,
+        transcript_path: None,
+    };
+    db.create_agent_session(&sub).unwrap();
+
+    // Only the ended lead should appear (1 result), sub should NOT be included
+    // because we don't recurse into ended agents
+    let results = db.get_agent_sessions_recursive("sess-skip").unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].agent_id, "ag-ended-lead");
+}
+
+// ── get_or_create_from_claude_task tests ──
+
+#[test]
+fn test_get_or_create_from_claude_task_creates_new() {
+    use flowforge_core::config::WorkTrackingConfig;
+    use flowforge_core::work_tracking;
+    let db = test_db();
+    let config = WorkTrackingConfig {
+        backend: "flowforge".to_string(),
+        ..Default::default()
+    };
+
+    let id = work_tracking::get_or_create_from_claude_task(
+        &db,
+        &config,
+        Some("claude-task-1"),
+        "Implement feature X",
+        Some("Description here"),
+    )
+    .unwrap();
+
+    // Work item should exist
+    let item = db.get_work_item(&id).unwrap().unwrap();
+    assert_eq!(item.title, "Implement feature X");
+    assert_eq!(item.external_id.as_deref(), Some("claude-task-1"));
+    assert_eq!(item.backend, "claude_tasks");
+}
+
+#[test]
+fn test_get_or_create_from_claude_task_deduplicates_by_external_id() {
+    use flowforge_core::config::WorkTrackingConfig;
+    use flowforge_core::work_tracking;
+    let db = test_db();
+    let config = WorkTrackingConfig {
+        backend: "flowforge".to_string(),
+        ..Default::default()
+    };
+
+    // Create first
+    let id1 = work_tracking::get_or_create_from_claude_task(
+        &db,
+        &config,
+        Some("claude-task-dup"),
+        "Fix bug Y",
+        None,
+    )
+    .unwrap();
+
+    // Same external_id → should return same item
+    let id2 = work_tracking::get_or_create_from_claude_task(
+        &db,
+        &config,
+        Some("claude-task-dup"),
+        "Fix bug Y",
+        None,
+    )
+    .unwrap();
+
+    assert_eq!(id1, id2);
+
+    // Verify only one item exists
+    let filter = WorkFilter::default();
+    let items = db.list_work_items(&filter).unwrap();
+    assert_eq!(items.len(), 1);
+}
+
+#[test]
+fn test_get_or_create_from_claude_task_deduplicates_by_title() {
+    use flowforge_core::config::WorkTrackingConfig;
+    use flowforge_core::work_tracking;
+    let db = test_db();
+    let config = WorkTrackingConfig {
+        backend: "flowforge".to_string(),
+        ..Default::default()
+    };
+
+    // Create a work item without external_id
+    let mut item = test_work_item("wi-existing", "Deploy service Z");
+    item.status = "in_progress".to_string();
+    db.create_work_item(&item).unwrap();
+
+    // get_or_create with matching title → should return existing
+    let id = work_tracking::get_or_create_from_claude_task(
+        &db,
+        &config,
+        Some("claude-task-new"),
+        "Deploy service Z",
+        None,
+    )
+    .unwrap();
+
+    assert_eq!(id, "wi-existing");
+
+    // External ID should now be linked
+    let updated = db.get_work_item("wi-existing").unwrap().unwrap();
+    assert_eq!(updated.external_id.as_deref(), Some("claude-task-new"));
 }

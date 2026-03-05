@@ -12,14 +12,27 @@ impl<'a> PatternStore<'a> {
         let patterns = self.db.get_all_patterns_short()?;
         let mut promoted = 0;
 
+        // Batch-fetch effectiveness scores to avoid N+1 queries
+        let candidate_ids: Vec<String> = patterns
+            .iter()
+            .filter(|p| {
+                p.usage_count >= self.config.promotion_min_usage
+                    && p.confidence >= self.config.promotion_min_confidence
+            })
+            .map(|p| p.id.clone())
+            .collect();
+        let eff_scores = self.db.get_effectiveness_scores_batch(&candidate_ids)?;
+
         for p in &patterns {
             if p.usage_count >= self.config.promotion_min_usage
                 && p.confidence >= self.config.promotion_min_confidence
             {
                 // Gate: block promotion if pattern has high failure correlation
-                let eff = self.db.get_pattern_effectiveness_score(&p.id)?;
-                if eff.samples >= self.config.demotion_min_feedback
-                    && eff.score < self.config.promotion_failure_correlation_max
+                let eff = eff_scores.get(&p.id);
+                let (eff_samples, eff_score) =
+                    eff.map(|e| (e.samples, e.score)).unwrap_or((0, 0.0));
+                if eff_samples >= self.config.demotion_min_feedback
+                    && eff_score < self.config.promotion_failure_correlation_max
                 {
                     continue; // Too many failures correlated with this pattern
                 }
@@ -38,12 +51,15 @@ impl<'a> PatternStore<'a> {
                     embedding_id: p.embedding_id,
                 };
 
-                self.db.store_pattern_long(&long_pattern)?;
-                // Update vector source_type from pattern_short → pattern_long
-                if let Some(eid) = p.embedding_id {
-                    self.db.update_vector_source_type(eid, "pattern_long")?;
-                }
-                self.db.delete_pattern_short(&p.id)?;
+                self.db.with_transaction(|| {
+                    self.db.store_pattern_long(&long_pattern)?;
+                    // Update vector source_type from pattern_short → pattern_long
+                    if let Some(eid) = p.embedding_id {
+                        self.db.update_vector_source_type(eid, "pattern_long")?;
+                    }
+                    self.db.delete_pattern_short(&p.id)?;
+                    Ok(())
+                })?;
                 promoted += 1;
             }
         }
@@ -69,8 +85,11 @@ impl<'a> PatternStore<'a> {
             }
             let failure_ratio = p.failure_count as f64 / total_feedback as f64;
             if failure_ratio >= self.config.demotion_failure_ratio {
-                self.db.delete_pattern_long(&p.id)?;
-                self.db.delete_vectors_for_source("pattern_long", &p.id)?;
+                self.db.with_transaction(|| {
+                    self.db.delete_pattern_long(&p.id)?;
+                    self.db.delete_vectors_for_source("pattern_long", &p.id)?;
+                    Ok(())
+                })?;
                 demoted += 1;
             }
         }

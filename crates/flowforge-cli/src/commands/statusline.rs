@@ -620,13 +620,17 @@ fn compute_intelligence(
 }
 
 /// Get agent summary: (active_count, idle_count, formatted_names)
-/// When parent_session_id is provided, only agents from that session are shown.
+/// When parent_session_id is provided, shows agents from that session and
+/// their sub-agents (team lead children) via recursive query.
 fn get_agent_summary(
     db: &MemoryDb,
     parent_session_id: Option<&str>,
 ) -> (usize, usize, Vec<String>) {
+    // Clean up orphaned agent sessions before display
+    let _ = db.cleanup_orphaned_agent_sessions();
+
     let agents = if let Some(sid) = parent_session_id {
-        db.get_agent_sessions(sid)
+        db.get_agent_sessions_recursive(sid)
             .unwrap_or_default()
             .into_iter()
             .filter(|a| a.ended_at.is_none())

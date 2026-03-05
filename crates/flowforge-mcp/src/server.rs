@@ -204,6 +204,8 @@ impl McpServer {
             json!({"status": "error", "message": format!("internal tool panic: {}", msg)})
         });
 
+        let is_error = result.get("status").and_then(|v| v.as_str()) == Some("error");
+        let pretty_result = serde_json::to_string_pretty(&result).unwrap_or_default();
         json!({
             "jsonrpc": "2.0",
             "id": id,
@@ -211,9 +213,10 @@ impl McpServer {
                 "content": [
                     {
                         "type": "text",
-                        "text": serde_json::to_string_pretty(&result).unwrap_or_default()
+                        "text": pretty_result
                     }
-                ]
+                ],
+                "isError": is_error
             }
         })
     }
@@ -335,5 +338,16 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("simulated tool panic"));
+    }
+
+    #[test]
+    fn test_handle_tools_call_sets_is_error_on_error_result() {
+        let error_result = json!({"status": "error", "message": "something failed"});
+        let is_error = error_result.get("status").and_then(|v| v.as_str()) == Some("error");
+        assert!(is_error);
+
+        let ok_result = json!({"status": "ok", "data": "value"});
+        let is_error = ok_result.get("status").and_then(|v| v.as_str()) == Some("error");
+        assert!(!is_error);
     }
 }

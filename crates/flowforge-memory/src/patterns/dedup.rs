@@ -34,9 +34,16 @@ impl<'a> PatternStore<'a> {
     /// Deduplicate using stored vectors instead of re-embedding. (A11)
     /// Uses per-cluster p95 thresholds when available.
     pub(super) fn deduplicate(&self) -> Result<()> {
-        let patterns = self.db.get_all_patterns_short()?;
+        let mut patterns = self.db.get_all_patterns_short()?;
         if patterns.len() < 2 {
             return Ok(());
+        }
+
+        // Limit dedup to newest patterns to avoid O(n^2) blowup
+        let max_dedup = self.config.max_dedup_patterns;
+        if patterns.len() > max_dedup {
+            // patterns are sorted by last_used DESC, so truncating keeps the newest
+            patterns.truncate(max_dedup);
         }
 
         // Load stored vectors indexed by source_id, also track embedding IDs

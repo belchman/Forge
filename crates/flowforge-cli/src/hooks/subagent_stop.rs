@@ -21,7 +21,9 @@ pub fn run() -> Result<()> {
     ctx.with_db("end_agent_session", |db| {
         db.with_transaction(|| {
             if let Some(ref path) = input.common.transcript_path {
-                db.ingest_transcript(&agent_id, path)?;
+                if std::path::Path::new(path.as_str()).exists() {
+                    db.ingest_transcript(&agent_id, path)?;
+                }
             }
             // Roll up agent edits/commands to parent session BEFORE ending
             // (so the statusline reflects cumulative work from all agents)

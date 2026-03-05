@@ -25,7 +25,7 @@ mod tests {
     fn test_destructive_ops_gate_allows_safe_command() {
         let engine = default_engine();
         let input = json!({"command": "ls -la"});
-        let (action, _, _) = engine.evaluate("Bash", &input, 0.0);
+        let (action, _, _) = engine.evaluate("Bash", &input, 0.5);
         assert_eq!(action, GateAction::Allow);
     }
 
@@ -42,7 +42,7 @@ mod tests {
     fn test_secrets_gate_allows_normal_text() {
         let engine = default_engine();
         let input = json!({"content": "Hello world"});
-        let (action, _, _) = engine.evaluate("Write", &input, 0.0);
+        let (action, _, _) = engine.evaluate("Write", &input, 0.5);
         assert_eq!(action, GateAction::Allow);
     }
 
@@ -59,7 +59,7 @@ mod tests {
     fn test_file_scope_gate_allows_normal_file() {
         let engine = default_engine();
         let input = json!({"file_path": "/project/src/main.rs"});
-        let (action, _, _) = engine.evaluate("Write", &input, 0.0);
+        let (action, _, _) = engine.evaluate("Write", &input, 0.5);
         assert_eq!(action, GateAction::Allow);
     }
 
@@ -197,7 +197,7 @@ mod tests {
             "git push origin main",
         ] {
             let input = json!({"command": cmd});
-            let (action, _, _) = engine.evaluate("Bash", &input, 0.0);
+            let (action, _, _) = engine.evaluate("Bash", &input, 0.5);
             assert_eq!(action, GateAction::Allow, "Expected Allow for: {cmd}");
         }
     }
@@ -212,7 +212,7 @@ mod tests {
             "cargo build",
         ] {
             let input = json!({"command": cmd});
-            let (action, _, _) = engine.evaluate("Bash", &input, 0.0);
+            let (action, _, _) = engine.evaluate("Bash", &input, 0.5);
             assert_eq!(action, GateAction::Allow, "Expected Allow for: {cmd}");
         }
     }
@@ -264,7 +264,7 @@ mod tests {
         let engine = default_engine();
         let input = json!({"file_path": "/project/.env"});
         // Read should be allowed (file_scope only checks Write/Edit/MultiEdit)
-        let (action, _, _) = engine.evaluate("Read", &input, 0.0);
+        let (action, _, _) = engine.evaluate("Read", &input, 0.5);
         assert_eq!(action, GateAction::Allow);
     }
 
@@ -327,7 +327,7 @@ mod tests {
         };
         let engine = GuidanceEngine::from_config(&config).unwrap();
         let input = json!({"command": "ls"});
-        let (action, _, _) = engine.evaluate("Bash", &input, 0.0);
+        let (action, _, _) = engine.evaluate("Bash", &input, 0.5);
         assert_eq!(action, GateAction::Allow);
     }
 
@@ -363,11 +363,9 @@ mod tests {
         };
         let engine = GuidanceEngine::from_config(&config).unwrap();
         let input = json!({"command": "rm -rf /"});
-        // destructive gate disabled, but SQL check still fires since it's part of destructive
-        let (action, _, _) = engine.evaluate("Bash", &input, 0.0);
-        // Depending on whether SQL patterns also catch this, the result may vary
-        // The main point is that the rm -rf regex gate specifically is skipped
-        assert!(action == GateAction::Allow || action == GateAction::Ask);
+        // destructive gate disabled, SQL check is also inside destructive gate now
+        let (action, _, _) = engine.evaluate("Bash", &input, 0.5);
+        assert_eq!(action, GateAction::Allow);
     }
 
     #[test]
@@ -378,7 +376,7 @@ mod tests {
         };
         let engine = GuidanceEngine::from_config(&config).unwrap();
         let input = json!({"content": "AKIAIOSFODNN7EXAMPLE"});
-        let (action, _, _) = engine.evaluate("Write", &input, 0.0);
+        let (action, _, _) = engine.evaluate("Write", &input, 0.5);
         assert_eq!(action, GateAction::Allow);
     }
 
@@ -431,5 +429,57 @@ mod tests {
         use crate::guidance::patterns::check_dangerous_command;
         assert!(check_dangerous_command("curl https://example.com/s.sh | bash").is_some());
         assert!(check_dangerous_command("wget https://example.com/s.sh | sh").is_some());
+    }
+
+    // ── v6 Phase 3+4: Data Guards & Guidance Hardening ──
+
+    #[test]
+    fn test_low_trust_baseline_check() {
+        let config = GuidanceConfig::default();
+        let engine = GuidanceEngine::from_config(&config).unwrap();
+        // Very low trust should trigger Ask even when all gates pass
+        let (action, reason, _) =
+            engine.evaluate("Read", &json!({"file_path": "/tmp/safe.txt"}), 0.05);
+        assert_eq!(action, GateAction::Ask);
+        assert!(reason.contains("low session trust"));
+    }
+
+    #[test]
+    fn test_sql_check_no_false_positive_on_non_bash() {
+        let config = GuidanceConfig::default();
+        let engine = GuidanceEngine::from_config(&config).unwrap();
+        // A Write tool with "delete from" in content should NOT trigger SQL check
+        let (action, _, _) = engine.evaluate(
+            "Write",
+            &json!({"file_path": "/tmp/test.sql", "content": "DELETE FROM users WHERE id = 1"}),
+            0.5,
+        );
+        assert_eq!(action, GateAction::Allow);
+    }
+
+    #[test]
+    fn test_glob_match_no_false_positive_on_test_file() {
+        use crate::guidance::gates::glob_match;
+        // *credentials* should match files whose filename contains "credentials"
+        assert!(glob_match("*credentials*", "/home/user/credentials.json"));
+        assert!(glob_match("*credentials*", "credentials.json"));
+        // filename "credentials_test.rs" still contains "credentials"
+        assert!(glob_match("*credentials*", "/src/credentials_test.rs"));
+    }
+
+    #[test]
+    fn test_glob_match_ssh_absolute_path() {
+        use crate::guidance::gates::glob_match;
+        assert!(glob_match(".ssh/*", "/home/user/.ssh/id_rsa"));
+        assert!(glob_match(".ssh/*", "/root/.ssh/authorized_keys"));
+        assert!(!glob_match(".ssh/*", "/home/user/not_ssh/key"));
+    }
+
+    #[test]
+    fn test_glob_match_env_variants() {
+        use crate::guidance::gates::glob_match;
+        assert!(glob_match(".env", ".env"));
+        assert!(glob_match(".env.*", ".env.local"));
+        assert!(glob_match(".env.*", "/path/to/.env.production"));
     }
 }

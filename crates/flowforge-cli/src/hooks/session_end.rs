@@ -14,16 +14,18 @@ pub fn run() -> Result<()> {
     let current_session = ctx.with_db("get_current_session", |db| db.get_current_session());
     let current_session = current_session.flatten();
 
-    // Ingest transcript before ending session
+    // Ingest transcript before ending session (only if file exists)
     if let Some(ref session) = current_session {
         let transcript = session
             .transcript_path
             .as_deref()
             .or(_input.common.transcript_path.as_deref());
         if let Some(path) = transcript {
-            let sid = session.id.clone();
-            let path = path.to_string();
-            ctx.with_db("ingest_transcript", |db| db.ingest_transcript(&sid, &path));
+            if std::path::Path::new(path).exists() {
+                let sid = session.id.clone();
+                let path = path.to_string();
+                ctx.with_db("ingest_transcript", |db| db.ingest_transcript(&sid, &path));
+            }
         }
     }
 

@@ -31,17 +31,21 @@ pub(super) fn check_destructive(
         }
     }
 
-    // Check all tools for SQL injection patterns
-    let input_str = tool_input.to_string().to_lowercase();
-    let sql_patterns = [
-        ("drop table", "SQL DROP TABLE detected"),
-        ("drop database", "SQL DROP DATABASE detected"),
-        ("delete from", "SQL DELETE FROM detected"),
-        ("truncate table", "SQL TRUNCATE TABLE detected"),
-    ];
-    for (pattern, desc) in &sql_patterns {
-        if input_str.contains(pattern) {
-            return Some((GateAction::Ask, format!("[destructive_ops] {desc}")));
+    // SQL injection patterns (only for Bash commands)
+    if tool_name == "Bash" {
+        if let Some(cmd) = tool_input.get("command").and_then(|v| v.as_str()) {
+            let cmd_lower = cmd.to_lowercase();
+            let sql_patterns = [
+                ("drop table", "SQL DROP TABLE detected"),
+                ("drop database", "SQL DROP DATABASE detected"),
+                ("delete from", "SQL DELETE FROM detected"),
+                ("truncate table", "SQL TRUNCATE TABLE detected"),
+            ];
+            for (pattern, desc) in &sql_patterns {
+                if cmd_lower.contains(pattern) {
+                    return Some((GateAction::Ask, format!("[destructive_ops] {desc}")));
+                }
+            }
         }
     }
 
@@ -156,42 +160,56 @@ pub(super) fn check_diff_size(
     None
 }
 
-/// Simple glob matching for protected paths.
+/// Proper glob matching for protected paths.
+/// Matches against both the full path and the filename component.
 pub(super) fn glob_match(pattern: &str, path: &str) -> bool {
     let path_lower = path.to_lowercase();
     let pattern_lower = pattern.to_lowercase();
 
-    if let Some(suffix) = pattern_lower.strip_prefix('*') {
-        // *.ext or *keyword*
-        if let Some(middle) = suffix.strip_suffix('*') {
-            return path_lower.contains(middle);
+    // Extract filename from path
+    let filename = std::path::Path::new(path)
+        .file_name()
+        .and_then(|f| f.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+
+    // Exact match (full path or filename)
+    if path_lower == pattern_lower || filename == pattern_lower {
+        return true;
+    }
+
+    // *.ext pattern (e.g., *.key, *.pem) — match file extension
+    if let Some(ext) = pattern_lower.strip_prefix("*.") {
+        if !ext.contains('*') {
+            return filename.ends_with(&format!(".{ext}"));
         }
-        return path_lower.ends_with(suffix);
     }
 
-    if pattern_lower.ends_with("/*") {
-        let prefix = &pattern_lower[..pattern_lower.len() - 2];
-        return path_lower.starts_with(prefix) || path_lower.contains(&format!("/{prefix}/"));
+    // *keyword* pattern (e.g., *credentials*, *secret*) — match against filename only
+    if pattern_lower.starts_with('*') && pattern_lower.ends_with('*') && pattern_lower.len() > 2 {
+        let keyword = &pattern_lower[1..pattern_lower.len() - 1];
+        return filename.contains(keyword);
     }
 
+    // dir/* pattern (e.g., .ssh/*) — match if any path segment matches
+    if let Some(dir) = pattern_lower.strip_suffix("/*") {
+        // Check if the path contains this directory as a component
+        return path_lower.contains(&format!("/{dir}/"))
+            || path_lower.contains(&format!("{dir}/"))
+            || path_lower.starts_with(&format!("{dir}/"));
+    }
+
+    // prefix* pattern (e.g., .env.*) — match against filename
+    if let Some(prefix) = pattern_lower.strip_suffix('*') {
+        return filename.starts_with(prefix);
+    }
     if pattern_lower.contains('*') {
-        // .env.* pattern
         let parts: Vec<&str> = pattern_lower.split('*').collect();
-        if parts.len() == 2 {
-            return path_lower.starts_with(parts[0])
-                || std::path::Path::new(path)
-                    .file_name()
-                    .and_then(|f| f.to_str())
-                    .map(|f| f.to_lowercase().starts_with(parts[0]))
-                    .unwrap_or(false);
+        if parts.len() == 2 && !parts[0].is_empty() {
+            // e.g. .env.* — check filename starts with prefix
+            return filename.starts_with(parts[0]);
         }
     }
 
-    // Exact match or filename match
-    path_lower == pattern_lower
-        || std::path::Path::new(path)
-            .file_name()
-            .and_then(|f| f.to_str())
-            .map(|f| f.to_lowercase() == pattern_lower)
-            .unwrap_or(false)
+    false
 }

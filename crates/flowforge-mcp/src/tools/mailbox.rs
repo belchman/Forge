@@ -5,12 +5,12 @@ use flowforge_memory::MemoryDb;
 use crate::params::ParamExt;
 
 pub fn send(db: &MemoryDb, p: &Value) -> flowforge_core::Result<Value> {
-    let work_item_id = p.str_or("work_item_id", "");
-    let from_session_id = p.str_or("from_session_id", "");
-    let from_agent_name = p.str_or("from_agent_name", "");
+    let work_item_id = p.require_str("work_item_id")?;
+    let from_session_id = p.require_str("from_session_id")?;
+    let from_agent_name = p.require_str("from_agent_name")?;
     let to_session_id = p.opt_str("to_session_id");
     let to_agent_name = p.opt_str("to_agent_name");
-    let content = p.str_or("content", "");
+    let content = p.require_str("content")?;
     let message_type = p.str_or("message_type", "text");
     let priority = p.i64_or("priority", 2) as i32;
     let msg = flowforge_core::MailboxMessage {
@@ -32,7 +32,7 @@ pub fn send(db: &MemoryDb, p: &Value) -> flowforge_core::Result<Value> {
 }
 
 pub fn read(db: &MemoryDb, p: &Value) -> flowforge_core::Result<Value> {
-    let session_id = p.str_or("session_id", "");
+    let session_id = p.require_str("session_id")?;
     let msgs = db.get_unread_messages(session_id)?;
     let entries: Vec<Value> = msgs
         .iter()
@@ -54,7 +54,7 @@ pub fn read(db: &MemoryDb, p: &Value) -> flowforge_core::Result<Value> {
 }
 
 pub fn history(db: &MemoryDb, p: &Value) -> flowforge_core::Result<Value> {
-    let work_item_id = p.str_or("work_item_id", "");
+    let work_item_id = p.require_str("work_item_id")?;
     let limit = p.u64_or("limit", 20) as usize;
     let msgs = db.get_mailbox_history(work_item_id, limit)?;
     let entries: Vec<Value> = msgs
@@ -76,7 +76,7 @@ pub fn history(db: &MemoryDb, p: &Value) -> flowforge_core::Result<Value> {
 }
 
 pub fn agents(db: &MemoryDb, p: &Value) -> flowforge_core::Result<Value> {
-    let work_item_id = p.str_or("work_item_id", "");
+    let work_item_id = p.require_str("work_item_id")?;
     let agent_list = db.get_agents_on_work_item(work_item_id)?;
     let entries: Vec<Value> = agent_list
         .iter()

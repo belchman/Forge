@@ -50,6 +50,16 @@ pub(crate) trait WorkBackend {
     fn create(&self, item: &WorkItem) -> Result<Option<String>>;
     /// Update an item's status in the external backend.
     fn update_status(&self, external_id: &str, status: &str) -> Result<()>;
+    /// Update an item with full field sync (title, description, assignee, priority, labels).
+    /// Default: delegates to update_status for backwards compatibility.
+    fn update_item(&self, external_id: &str, item: &WorkItem) -> Result<()> {
+        self.update_status(external_id, &item.status)
+    }
+    /// Add a comment to an item in the external backend.
+    /// Default: no-op (not all backends support comments).
+    fn add_comment(&self, _external_id: &str, _author: &str, _text: &str) -> Result<()> {
+        Ok(())
+    }
     /// Pull items from the external backend into FlowForge SQLite. Returns count synced.
     fn sync_inbound(&self, db: &dyn WorkDb, config: &WorkTrackingConfig) -> Result<u32>;
 }
@@ -130,6 +140,66 @@ impl WorkBackend for KanbusBackend {
             )
         }) {
             warn!("kanbus status update failed: {e}");
+        }
+        Ok(())
+    }
+
+    fn update_item(&self, external_id: &str, item: &WorkItem) -> Result<()> {
+        if item.status == "completed" {
+            if let Err(e) =
+                with_stderr_suppressed(|| kanbus::issue_close::close_issue(&self.root, external_id))
+            {
+                warn!("kanbus close failed: {e}");
+            }
+            return Ok(());
+        }
+
+        let kanbus_status = match item.status.as_str() {
+            "pending" => "open",
+            "in_progress" => "in_progress",
+            "blocked" => "blocked",
+            other => other,
+        };
+
+        let root = self.root.clone();
+        let ext_id = external_id.to_string();
+        let title = item.title.clone();
+        let description = item.description.clone();
+        let assignee = item.assignee.clone();
+        let priority = item.priority.clamp(1, 4) as u8;
+        let parent = item.parent_id.clone();
+
+        if let Err(e) = with_stderr_suppressed(move || {
+            kanbus::issue_update::update_issue(
+                &root,
+                &ext_id,
+                Some(&title),
+                description.as_deref(),
+                Some(kanbus_status),
+                assignee.as_deref(),
+                Some(priority),
+                false,
+                false,
+                &[],
+                &[],
+                None,
+                parent.as_deref(),
+            )
+        }) {
+            warn!("kanbus item update failed: {e}");
+        }
+        Ok(())
+    }
+
+    fn add_comment(&self, external_id: &str, author: &str, text: &str) -> Result<()> {
+        let root = self.root.clone();
+        let ext_id = external_id.to_string();
+        let author = author.to_string();
+        let text = text.to_string();
+        if let Err(e) = with_stderr_suppressed(move || {
+            kanbus::issue_comment::add_comment(&root, &ext_id, &author, &text)
+        }) {
+            warn!("kanbus comment failed: {e}");
         }
         Ok(())
     }

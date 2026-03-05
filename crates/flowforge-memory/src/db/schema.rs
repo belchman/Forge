@@ -3,7 +3,7 @@ use flowforge_core::{Error, Result};
 use super::{is_transient_sqlite, MemoryDb, SqliteExt};
 
 /// Bump this whenever init_schema() changes (new tables, columns, indexes).
-pub(crate) const SCHEMA_VERSION: u32 = 6;
+pub(crate) const SCHEMA_VERSION: u32 = 7;
 
 impl MemoryDb {
     pub(crate) fn init_schema(&self) -> Result<()> {
@@ -375,6 +375,73 @@ impl MemoryDb {
             "CREATE INDEX IF NOT EXISTS idx_hnsw_source ON hnsw_entries(source_type, source_id);
              CREATE INDEX IF NOT EXISTS idx_agent_sessions_task ON agent_sessions(task_id);",
         );
+
+        // v7 migration: add FK constraints to trajectories and context_injections
+        // Disable FK checks during migration (required because trajectory_steps references trajectories)
+        self.conn.execute_batch("PRAGMA foreign_keys = OFF").sq()?;
+
+        // Migrate trajectories: add FK on work_item_id -> work_items(id) ON DELETE SET NULL
+        self.conn
+            .execute_batch(
+                "
+            CREATE TABLE IF NOT EXISTS trajectories_v7 (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                work_item_id TEXT REFERENCES work_items(id) ON DELETE SET NULL,
+                agent_name TEXT,
+                task_description TEXT,
+                status TEXT DEFAULT 'recording',
+                started_at TEXT NOT NULL,
+                ended_at TEXT,
+                verdict TEXT,
+                confidence REAL,
+                metadata TEXT,
+                embedding_id INTEGER
+            );
+            INSERT OR IGNORE INTO trajectories_v7 SELECT * FROM trajectories;
+            DROP TABLE trajectories;
+            ALTER TABLE trajectories_v7 RENAME TO trajectories;
+        ",
+            )
+            .sq()?;
+
+        // Migrate context_injections: add FK on trajectory_id -> trajectories(id) ON DELETE SET NULL
+        self.conn
+            .execute_batch(
+                "
+            CREATE TABLE IF NOT EXISTS context_injections_v7 (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                trajectory_id TEXT REFERENCES trajectories(id) ON DELETE SET NULL,
+                injection_type TEXT NOT NULL,
+                reference_id TEXT,
+                similarity REAL,
+                timestamp TEXT NOT NULL,
+                effectiveness TEXT
+            );
+            INSERT OR IGNORE INTO context_injections_v7 SELECT * FROM context_injections;
+            DROP TABLE context_injections;
+            ALTER TABLE context_injections_v7 RENAME TO context_injections;
+        ",
+            )
+            .sq()?;
+
+        // Recreate all indexes that were dropped with the old tables
+        self.conn
+            .execute_batch(
+                "
+            CREATE INDEX IF NOT EXISTS idx_trajectories_session ON trajectories(session_id);
+            CREATE INDEX IF NOT EXISTS idx_trajectories_status ON trajectories(status);
+            CREATE INDEX IF NOT EXISTS idx_trajectories_work_item ON trajectories(work_item_id);
+            CREATE INDEX IF NOT EXISTS idx_trajectory_steps_traj ON trajectory_steps(trajectory_id);
+            CREATE INDEX IF NOT EXISTS idx_ctx_inject_session ON context_injections(session_id);
+            CREATE INDEX IF NOT EXISTS idx_ctx_inject_trajectory ON context_injections(trajectory_id);
+        ",
+            )
+            .sq()?;
+
+        // Re-enable foreign keys
+        self.conn.execute_batch("PRAGMA foreign_keys = ON").sq()?;
 
         Ok(())
     }

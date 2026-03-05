@@ -76,6 +76,26 @@ impl MemoryDb {
         rows.collect::<std::result::Result<Vec<_>, _>>().sq()
     }
 
+    /// Get agent sessions recursively — direct children plus grandchildren
+    /// (agents spawned by team lead agents). This makes team sub-agents visible
+    /// in the parent session's statusline.
+    pub fn get_agent_sessions_recursive(
+        &self,
+        parent_session_id: &str,
+    ) -> Result<Vec<AgentSession>> {
+        // Get direct children
+        let direct = self.get_agent_sessions(parent_session_id)?;
+        let mut all = direct.clone();
+        // Get grandchildren (agents spawned by team lead agents)
+        for agent in &direct {
+            if agent.ended_at.is_none() {
+                let children = self.get_agent_sessions(&agent.agent_id)?;
+                all.extend(children);
+            }
+        }
+        Ok(all)
+    }
+
     pub fn get_active_agent_sessions(&self) -> Result<Vec<AgentSession>> {
         let mut stmt = self
             .conn

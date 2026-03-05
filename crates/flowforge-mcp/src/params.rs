@@ -51,3 +51,24 @@ impl ParamExt for Value {
             })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_require_str_rejects_empty() {
+        let params = json!({"key": ""});
+        assert!(params.require_str("key").is_err());
+
+        let params = json!({});
+        assert!(params.require_str("key").is_err());
+    }
+
+    #[test]
+    fn test_require_str_accepts_valid() {
+        let params = json!({"key": "value"});
+        assert_eq!(params.require_str("key").unwrap(), "value");
+    }
+}

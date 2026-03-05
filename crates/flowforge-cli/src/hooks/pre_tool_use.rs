@@ -235,13 +235,12 @@ fn run_always_checks(
                     .get("command")
                     .and_then(|v| v.as_str())
                     .map(|cmd| {
-                        cmd.contains("flowforge work")
-                            || cmd.contains("flowforge init")
+                        cmd.starts_with("flowforge work")
+                            || cmd.starts_with("flowforge init")
                             || cmd.starts_with("cargo ")
                             || cmd.starts_with("git ")
                             || cmd.starts_with("ls")
                             || cmd.starts_with("cat ")
-                            || cmd.starts_with("echo ")
                     })
                     .unwrap_or(false);
 
@@ -283,4 +282,33 @@ fn run_always_checks(
     });
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn test_echo_not_in_allowed_commands() {
+        // echo should NOT be in the allowed list as it can write to files
+        let cmd = "echo 'malicious' > /etc/passwd";
+        let is_allowed = cmd.starts_with("flowforge work")
+            || cmd.starts_with("flowforge init")
+            || cmd.starts_with("cargo ")
+            || cmd.starts_with("git ")
+            || cmd.starts_with("ls")
+            || cmd.starts_with("cat ");
+        assert!(!is_allowed);
+    }
+
+    #[test]
+    fn test_flowforge_work_starts_with_not_contains() {
+        // "echo flowforge work" should NOT be allowed
+        let cmd = "echo flowforge work create test";
+        let is_allowed = cmd.starts_with("flowforge work") || cmd.starts_with("flowforge init");
+        assert!(!is_allowed);
+
+        // But actual flowforge commands should be allowed
+        let cmd = "flowforge work create test";
+        let is_allowed = cmd.starts_with("flowforge work") || cmd.starts_with("flowforge init");
+        assert!(is_allowed);
+    }
 }

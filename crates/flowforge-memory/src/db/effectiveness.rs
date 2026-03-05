@@ -357,6 +357,59 @@ impl MemoryDb {
         rows.collect::<std::result::Result<Vec<_>, _>>().sq()
     }
 
+    /// Get effectiveness scores for multiple patterns in a single query.
+    /// Avoids N+1 queries during promotion.
+    pub fn get_effectiveness_scores_batch(
+        &self,
+        ids: &[String],
+    ) -> Result<std::collections::HashMap<String, PatternEffectiveness>> {
+        use std::collections::HashMap;
+        if ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        // Check both pattern tables; build a map from pattern_id -> (score, samples)
+        let placeholders: Vec<String> = ids
+            .iter()
+            .enumerate()
+            .map(|(i, _)| format!("?{}", i + 1))
+            .collect();
+        let in_clause = placeholders.join(",");
+
+        // SQLite reuses the same positional params across UNION ALL
+        let sql = format!(
+            "SELECT id, effectiveness_score, effectiveness_samples FROM patterns_short WHERE id IN ({in_clause})
+             UNION ALL
+             SELECT id, effectiveness_score, effectiveness_samples FROM patterns_long WHERE id IN ({in_clause})"
+        );
+        let params: Vec<&dyn rusqlite::types::ToSql> = ids
+            .iter()
+            .map(|id| id as &dyn rusqlite::types::ToSql)
+            .collect();
+
+        let mut stmt = self.conn.prepare(&sql).sq()?;
+        let rows = stmt
+            .query_map(params.as_slice(), |row| {
+                let pattern_id: String = row.get(0)?;
+                let score: f64 = row.get(1)?;
+                let samples: u32 = row.get(2)?;
+                Ok((
+                    pattern_id.clone(),
+                    PatternEffectiveness {
+                        pattern_id,
+                        score,
+                        samples,
+                    },
+                ))
+            })
+            .sq()?;
+        let mut map = HashMap::new();
+        for row in rows {
+            let (id, eff) = row.sq()?;
+            map.insert(id, eff);
+        }
+        Ok(map)
+    }
+
     /// Get pattern effectiveness score for promotion gating.
     pub fn get_pattern_effectiveness_score(
         &self,

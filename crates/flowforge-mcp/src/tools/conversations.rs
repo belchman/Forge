@@ -5,7 +5,7 @@ use flowforge_memory::MemoryDb;
 use crate::params::ParamExt;
 
 pub fn history(db: &MemoryDb, p: &Value) -> flowforge_core::Result<Value> {
-    let session_id = p.str_or("session_id", "");
+    let session_id = p.require_str("session_id")?;
     let limit = p.u64_or("limit", 20) as usize;
     let offset = p.u64_or("offset", 0) as usize;
     let total = db.get_conversation_message_count(session_id).unwrap_or(0);
@@ -28,8 +28,8 @@ pub fn history(db: &MemoryDb, p: &Value) -> flowforge_core::Result<Value> {
 }
 
 pub fn search(db: &MemoryDb, p: &Value) -> flowforge_core::Result<Value> {
-    let session_id = p.str_or("session_id", "");
-    let query = p.str_or("query", "");
+    let session_id = p.require_str("session_id")?;
+    let query = p.require_str("query")?;
     let limit = p.u64_or("limit", 10) as usize;
     let msgs = db.search_conversation_messages(session_id, query, limit)?;
     let entries: Vec<Value> = msgs
@@ -47,15 +47,15 @@ pub fn search(db: &MemoryDb, p: &Value) -> flowforge_core::Result<Value> {
 }
 
 pub fn ingest(db: &MemoryDb, p: &Value) -> flowforge_core::Result<Value> {
-    let session_id = p.str_or("session_id", "");
-    let path = p.str_or("transcript_path", "");
+    let session_id = p.require_str("session_id")?;
+    let path = p.require_str("transcript_path")?;
     let count = db.ingest_transcript(session_id, path)?;
     Ok(json!({"status": "ok", "ingested": count, "session_id": session_id}))
 }
 
 pub fn checkpoint_create(db: &MemoryDb, p: &Value) -> flowforge_core::Result<Value> {
-    let session_id = p.str_or("session_id", "");
-    let name = p.str_or("name", "");
+    let session_id = p.require_str("session_id")?;
+    let name = p.require_str("name")?;
     let description = p.opt_str("description");
     let message_index = db.get_latest_message_index(session_id).unwrap_or(0);
     let cp = flowforge_core::Checkpoint {
@@ -73,7 +73,7 @@ pub fn checkpoint_create(db: &MemoryDb, p: &Value) -> flowforge_core::Result<Val
 }
 
 pub fn checkpoint_list(db: &MemoryDb, p: &Value) -> flowforge_core::Result<Value> {
-    let session_id = p.str_or("session_id", "");
+    let session_id = p.require_str("session_id")?;
     let cps = db.list_checkpoints(session_id)?;
     let entries: Vec<Value> = cps
         .iter()
@@ -177,7 +177,7 @@ pub fn session_fork(db: &MemoryDb, p: &Value) -> flowforge_core::Result<Value> {
 }
 
 pub fn session_forks(db: &MemoryDb, p: &Value) -> flowforge_core::Result<Value> {
-    let session_id = p.str_or("session_id", "");
+    let session_id = p.require_str("session_id")?;
     let forks = db.get_session_forks(session_id)?;
     let entries: Vec<Value> = forks
         .iter()
@@ -197,7 +197,7 @@ pub fn session_forks(db: &MemoryDb, p: &Value) -> flowforge_core::Result<Value> 
 }
 
 pub fn session_lineage(db: &MemoryDb, p: &Value) -> flowforge_core::Result<Value> {
-    let session_id = p.str_or("session_id", "");
+    let session_id = p.require_str("session_id")?;
     let lineage = db.get_session_lineage(session_id)?;
     let entries: Vec<Value> = lineage
         .iter()

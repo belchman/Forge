@@ -206,7 +206,14 @@ pub fn run() -> Result<()> {
         let mut swarm_parts: Vec<String> = Vec::new();
 
         // Agents: "N active (names)" or "no agents"
-        let (active_count, idle_count, agent_names) = get_agent_summary(db);
+        // Scope to current session to avoid showing stale agents from previous sessions
+        let current_session_id = db
+            .get_current_session()
+            .ok()
+            .flatten()
+            .map(|s| s.id);
+        let (active_count, idle_count, agent_names) =
+            get_agent_summary(db, current_session_id.as_deref());
         let total = active_count + idle_count;
         if total > 0 {
             swarm_parts.push(format!(
@@ -616,8 +623,20 @@ fn compute_intelligence(
 }
 
 /// Get agent summary: (active_count, idle_count, formatted_names)
-fn get_agent_summary(db: &MemoryDb) -> (usize, usize, Vec<String>) {
-    let agents = db.get_active_agent_sessions().unwrap_or_default();
+/// When parent_session_id is provided, only agents from that session are shown.
+fn get_agent_summary(
+    db: &MemoryDb,
+    parent_session_id: Option<&str>,
+) -> (usize, usize, Vec<String>) {
+    let agents = if let Some(sid) = parent_session_id {
+        db.get_agent_sessions(sid)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|a| a.ended_at.is_none())
+            .collect()
+    } else {
+        db.get_active_agent_sessions().unwrap_or_default()
+    };
     let active: Vec<_> = agents
         .iter()
         .filter(|a| a.status == AgentSessionStatus::Active)

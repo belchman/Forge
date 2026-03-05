@@ -6,3 +6,4 @@ Cargo.lock
 .flowforge/
 .fastembed_cache/
 project-local/
+project/

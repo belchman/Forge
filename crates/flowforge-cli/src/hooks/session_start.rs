@@ -78,7 +78,37 @@ pub fn run() -> Result<()> {
         }
     }
 
-    let output = ContextOutput::with_context("[FlowForge] Ready.".to_string());
+    // Validate work backend and report status on startup
+    let mut ready_msg = String::from("[FlowForge] Ready.");
+    let backend = flowforge_core::work_tracking::detect_backend(&config.work_tracking);
+    if backend == "kanbus" {
+        let kanbus_ok = std::path::Path::new(".kanbus.yml").exists()
+            || std::path::Path::new(".kanbus").exists();
+        if !kanbus_ok {
+            ready_msg.push_str("\n⚠ Kanbus backend configured but .kanbus.yml not found.");
+        }
+    }
+
+    // Report active work items count at startup
+    if db_path.exists() {
+        if let Ok(db) = MemoryDb::open(&db_path) {
+            let filter = flowforge_core::WorkFilter {
+                status: Some("in_progress".to_string()),
+                ..Default::default()
+            };
+            if let Ok(active) = db.list_work_items(&filter) {
+                if active.is_empty() && config.work_tracking.require_task {
+                    ready_msg.push_str(
+                        &format!("\n[{backend}] No active work items. Run `flowforge work create --title \"<desc>\" --type task` before starting work.")
+                    );
+                } else if !active.is_empty() {
+                    ready_msg.push_str(&format!("\n[{backend}] {} active item(s).", active.len()));
+                }
+            }
+        }
+    }
+
+    let output = ContextOutput::with_context(ready_msg);
     output.write()?;
     Ok(())
 }

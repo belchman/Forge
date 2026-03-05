@@ -298,8 +298,8 @@ enum McpAction {
 enum WorkAction {
     /// Create a new work item
     Create {
-        /// Title of the work item
-        #[arg(long)]
+        /// Title of the work item (positional or --title)
+        #[arg(value_name = "TITLE")]
         title: String,
         /// Type: task, epic, bug, story, sub-task
         #[arg(long, default_value = "task")]

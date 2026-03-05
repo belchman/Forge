@@ -7,6 +7,9 @@ use flowforge_core::FlowForgeConfig;
 use flowforge_memory::{MemoryDb, PatternStore};
 use flowforge_tmux::TmuxStateManager;
 
+use crate::params::ParamExt;
+use crate::tool_builder::ToolBuilderExt;
+
 pub struct ToolDef {
     pub name: String,
     pub description: String,
@@ -25,11 +28,9 @@ impl Default for ToolRegistry {
 
 impl ToolRegistry {
     pub fn new() -> Self {
-        let mut registry = Self {
-            tools: HashMap::new(),
-        };
-        registry.register_all();
-        registry
+        let mut tools = HashMap::new();
+        Self::register_all(&mut tools);
+        Self { tools }
     }
 
     pub fn list(&self) -> Vec<&ToolDef> {
@@ -44,1106 +45,756 @@ impl ToolRegistry {
 
     pub fn call(&self, name: &str, params: &Value) -> Value {
         match name {
-            "memory_get" => self.memory_get(params),
-            "memory_set" => self.memory_set(params),
-            "memory_search" => self.memory_search(params),
-            "memory_delete" => self.memory_delete(params),
-            "memory_list" => self.memory_list(params),
-            "memory_import" => self.memory_import(params),
-            "learning_store" => self.learning_store(params),
-            "learning_search" => self.learning_search(params),
-            "learning_feedback" => self.learning_feedback(params),
-            "learning_stats" => self.learning_stats(params),
-            "learning_clusters" => self.learning_clusters(params),
-            "agents_list" => self.agents_list(params),
-            "agents_route" => self.agents_route(params),
-            "agents_info" => self.agents_info(params),
-            "session_status" => self.session_status(params),
-            "session_metrics" => self.session_metrics(params),
-            "session_history" => self.session_history(params),
-            "session_agents" => self.session_agents(params),
-            "team_status" => self.team_status(params),
-            "team_log" => self.team_log(params),
-            "work_create" => self.work_create(params),
-            "work_list" => self.work_list(params),
-            "work_update" => self.work_update(params),
-            "work_log" => self.work_log(params),
-            "conversation_history" => self.conversation_history(params),
-            "conversation_search" => self.conversation_search(params),
-            "conversation_ingest" => self.conversation_ingest(params),
-            "checkpoint_create" => self.checkpoint_create(params),
-            "checkpoint_list" => self.checkpoint_list(params),
-            "checkpoint_get" => self.checkpoint_get(params),
-            "session_fork" => self.session_fork(params),
-            "session_forks" => self.session_forks(params),
-            "session_lineage" => self.session_lineage(params),
-            "mailbox_send" => self.mailbox_send(params),
-            "mailbox_read" => self.mailbox_read(params),
-            "mailbox_history" => self.mailbox_history(params),
-            "mailbox_agents" => self.mailbox_agents(params),
-            "guidance_rules" => self.guidance_rules(params),
-            "guidance_trust" => self.guidance_trust(params),
-            "guidance_audit" => self.guidance_audit(params),
-            "work_claim" => self.work_claim(params),
-            "work_release" => self.work_release(params),
-            "work_steal" => self.work_steal(params),
-            "work_heartbeat" => self.work_heartbeat(params),
-            "plugin_list" => self.plugin_list(params),
-            "plugin_info" => self.plugin_info(params),
-            "trajectory_list" => self.trajectory_list(params),
-            "trajectory_get" => self.trajectory_get(params),
-            "trajectory_judge" => self.trajectory_judge(params),
-            "work_close" => self.work_close(params),
-            "work_sync" => self.work_sync(params),
-            "work_load" => self.work_load(params),
-            "guidance_verify" => self.guidance_verify(params),
+            "memory_get" => Self::memory_get(params),
+            "memory_set" => Self::memory_set(params),
+            "memory_search" => Self::memory_search(params),
+            "memory_delete" => Self::memory_delete(params),
+            "memory_list" => Self::memory_list(params),
+            "memory_import" => Self::memory_import(params),
+            "learning_store" => Self::learning_store(params),
+            "learning_search" => Self::learning_search(params),
+            "learning_feedback" => Self::learning_feedback(params),
+            "learning_stats" => Self::learning_stats(params),
+            "learning_clusters" => Self::learning_clusters(params),
+            "agents_list" => Self::agents_list(params),
+            "agents_route" => Self::agents_route(params),
+            "agents_info" => Self::agents_info(params),
+            "session_status" => Self::session_status(params),
+            "session_metrics" => Self::session_metrics(params),
+            "session_history" => Self::session_history(params),
+            "session_agents" => Self::session_agents(params),
+            "team_status" => Self::team_status(params),
+            "team_log" => Self::team_log(params),
+            "work_create" => Self::work_create(params),
+            "work_list" => Self::work_list(params),
+            "work_update" => Self::work_update(params),
+            "work_log" => Self::work_log(params),
+            "conversation_history" => Self::conversation_history(params),
+            "conversation_search" => Self::conversation_search(params),
+            "conversation_ingest" => Self::conversation_ingest(params),
+            "checkpoint_create" => Self::checkpoint_create(params),
+            "checkpoint_list" => Self::checkpoint_list(params),
+            "checkpoint_get" => Self::checkpoint_get(params),
+            "session_fork" => Self::session_fork(params),
+            "session_forks" => Self::session_forks(params),
+            "session_lineage" => Self::session_lineage(params),
+            "mailbox_send" => Self::mailbox_send(params),
+            "mailbox_read" => Self::mailbox_read(params),
+            "mailbox_history" => Self::mailbox_history(params),
+            "mailbox_agents" => Self::mailbox_agents(params),
+            "guidance_rules" => Self::guidance_rules(params),
+            "guidance_trust" => Self::guidance_trust(params),
+            "guidance_audit" => Self::guidance_audit(params),
+            "work_claim" => Self::work_claim(params),
+            "work_release" => Self::work_release(params),
+            "work_steal" => Self::work_steal(params),
+            "work_heartbeat" => Self::work_heartbeat(params),
+            "plugin_list" => Self::plugin_list(params),
+            "plugin_info" => Self::plugin_info(params),
+            "trajectory_list" => Self::trajectory_list(params),
+            "trajectory_get" => Self::trajectory_get(params),
+            "trajectory_judge" => Self::trajectory_judge(params),
+            "work_close" => Self::work_close(params),
+            "work_sync" => Self::work_sync(params),
+            "work_load" => Self::work_load(params),
+            "guidance_verify" => Self::guidance_verify(params),
+            "work_stealable" => Self::work_stealable(params),
+            "work_status" => Self::work_status(params),
             _ => json!({ "error": format!("unknown tool: {}", name) }),
         }
     }
 
-    fn register_all(&mut self) {
+    // ── Registration ───────────────────────────────────────────────
+
+    fn register_all(tools: &mut HashMap<String, ToolDef>) {
         // Memory tools
-        self.register(ToolDef {
-            name: "memory_get".into(),
-            description: "Get a memory entry by key".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "key": { "type": "string", "description": "The memory key to retrieve" }
-                },
-                "required": ["key"]
-            }),
-        });
-
-        self.register(ToolDef {
-            name: "memory_set".into(),
-            description: "Store a memory entry with a key and value".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "key": { "type": "string", "description": "The memory key" },
-                    "value": { "type": "string", "description": "The value to store" },
-                    "category": { "type": "string", "description": "Optional category for the memory" }
-                },
-                "required": ["key", "value"]
-            }),
-        });
-
-        self.register(ToolDef {
-            name: "memory_search".into(),
-            description: "Search memory entries by query string".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "query": { "type": "string", "description": "Search query" },
-                    "limit": { "type": "integer", "description": "Max results to return", "default": 10 }
-                },
-                "required": ["query"]
-            }),
-        });
-
-        self.register(ToolDef {
-            name: "memory_delete".into(),
-            description: "Delete a memory entry by key".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "key": { "type": "string", "description": "The memory key to delete" }
-                },
-                "required": ["key"]
-            }),
-        });
-
-        self.register(ToolDef {
-            name: "memory_list".into(),
-            description: "List all memory entries, optionally filtered by category".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "category": { "type": "string", "description": "Filter by category" },
-                    "limit": { "type": "integer", "description": "Max results", "default": 50 }
-                }
-            }),
-        });
-
-        self.register(ToolDef {
-            name: "memory_import".into(),
-            description: "Import memory entries from a JSON array".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "entries": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "key": { "type": "string" },
-                                "value": { "type": "string" },
-                                "category": { "type": "string" }
-                            },
-                            "required": ["key", "value"]
-                        },
-                        "description": "Array of memory entries to import"
-                    }
-                },
-                "required": ["entries"]
-            }),
-        });
+        tools
+            .tool("memory_get", "Get a memory entry by key")
+            .required_str("key", "The memory key to retrieve")
+            .build();
+        tools
+            .tool("memory_set", "Store a memory entry with a key and value")
+            .required_str("key", "The memory key")
+            .required_str("value", "The value to store")
+            .optional_str("category", "Optional category for the memory")
+            .build();
+        tools
+            .tool("memory_search", "Search memory entries by query string")
+            .required_str("query", "Search query")
+            .optional_int_default("limit", "Max results to return", 10)
+            .build();
+        tools
+            .tool("memory_delete", "Delete a memory entry by key")
+            .required_str("key", "The memory key to delete")
+            .build();
+        tools
+            .tool(
+                "memory_list",
+                "List all memory entries, optionally filtered by category",
+            )
+            .optional_str("category", "Filter by category")
+            .optional_int_default("limit", "Max results", 50)
+            .build();
+        tools
+            .tool("memory_import", "Import memory entries from a JSON array")
+            .required_array(
+                "entries",
+                "Array of memory entries to import",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "key": { "type": "string" },
+                        "value": { "type": "string" },
+                        "category": { "type": "string" }
+                    },
+                    "required": ["key", "value"]
+                }),
+            )
+            .build();
 
         // Learning tools
-        self.register(ToolDef {
-            name: "learning_store".into(),
-            description: "Store a learned pattern from an observation".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "content": { "type": "string", "description": "The pattern content" },
-                    "category": { "type": "string", "description": "Pattern category (e.g., code_style, error_fix)" },
-                    "confidence": { "type": "number", "description": "Initial confidence 0.0-1.0", "default": 0.5 }
-                },
-                "required": ["content", "category"]
-            }),
-        });
-
-        self.register(ToolDef {
-            name: "learning_search".into(),
-            description: "Search learned patterns by query".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "query": { "type": "string", "description": "Search query" },
-                    "category": { "type": "string", "description": "Filter by category" },
-                    "limit": { "type": "integer", "description": "Max results", "default": 10 }
-                },
-                "required": ["query"]
-            }),
-        });
-
-        self.register(ToolDef {
-            name: "learning_feedback".into(),
-            description: "Provide feedback on a learned pattern (positive or negative)".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "pattern_id": { "type": "string", "description": "The pattern ID" },
-                    "positive": { "type": "boolean", "description": "Whether the feedback is positive" }
-                },
-                "required": ["pattern_id", "positive"]
-            }),
-        });
-
-        self.register(ToolDef {
-            name: "learning_stats".into(),
-            description: "Get statistics about learned patterns".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {}
-            }),
-        });
-
-        self.register(ToolDef {
-            name: "learning_clusters".into(),
-            description: "Get topic cluster information for pattern vectors".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {}
-            }),
-        });
+        tools
+            .tool(
+                "learning_store",
+                "Store a learned pattern from an observation",
+            )
+            .required_str("content", "The pattern content")
+            .required_str("category", "Pattern category (e.g., code_style, error_fix)")
+            .optional_num_default("confidence", "Initial confidence 0.0-1.0", 0.5)
+            .build();
+        tools
+            .tool("learning_search", "Search learned patterns by query")
+            .required_str("query", "Search query")
+            .optional_str("category", "Filter by category")
+            .optional_int_default("limit", "Max results", 10)
+            .build();
+        tools
+            .tool(
+                "learning_feedback",
+                "Provide feedback on a learned pattern (positive or negative)",
+            )
+            .required_str("pattern_id", "The pattern ID")
+            .required_bool("positive", "Whether the feedback is positive")
+            .build();
+        tools
+            .tool("learning_stats", "Get statistics about learned patterns")
+            .build();
+        tools
+            .tool(
+                "learning_clusters",
+                "Get topic cluster information for pattern vectors",
+            )
+            .build();
 
         // Agent tools
-        self.register(ToolDef {
-            name: "agents_list".into(),
-            description: "List all available agents with their capabilities".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "source": { "type": "string", "description": "Filter by source: builtin, global, project" }
-                }
-            }),
-        });
-
-        self.register(ToolDef {
-            name: "agents_route".into(),
-            description: "Route a task description to the best matching agent".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "task": { "type": "string", "description": "Task description to route" },
-                    "top_k": { "type": "integer", "description": "Number of top candidates", "default": 3 }
-                },
-                "required": ["task"]
-            }),
-        });
-
-        self.register(ToolDef {
-            name: "agents_info".into(),
-            description: "Get detailed info about a specific agent".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "name": { "type": "string", "description": "Agent name" }
-                },
-                "required": ["name"]
-            }),
-        });
+        tools
+            .tool(
+                "agents_list",
+                "List all available agents with their capabilities",
+            )
+            .optional_str("source", "Filter by source: builtin, global, project")
+            .build();
+        tools
+            .tool(
+                "agents_route",
+                "Route a task description to the best matching agent",
+            )
+            .required_str("task", "Task description to route")
+            .optional_int_default("top_k", "Number of top candidates", 3)
+            .build();
+        tools
+            .tool("agents_info", "Get detailed info about a specific agent")
+            .required_str("name", "Agent name")
+            .build();
 
         // Session tools
-        self.register(ToolDef {
-            name: "session_status".into(),
-            description: "Get current session status including active tasks and edits".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {}
-            }),
-        });
-
-        self.register(ToolDef {
-            name: "session_metrics".into(),
-            description: "Get session metrics: edits, commands, routing decisions".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "session_id": { "type": "string", "description": "Session ID (defaults to current)" }
-                }
-            }),
-        });
-
-        self.register(ToolDef {
-            name: "session_history".into(),
-            description: "Get session history with summaries".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "limit": { "type": "integer", "description": "Max sessions to return", "default": 10 }
-                }
-            }),
-        });
-
-        self.register(ToolDef {
-            name: "session_agents".into(),
-            description: "List agent sessions for a given session or the current session".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "session_id": { "type": "string", "description": "Parent session ID (defaults to current)" }
-                }
-            }),
-        });
+        tools
+            .tool(
+                "session_status",
+                "Get current session status including active tasks and edits",
+            )
+            .build();
+        tools
+            .tool(
+                "session_metrics",
+                "Get session metrics: edits, commands, routing decisions",
+            )
+            .optional_str("session_id", "Session ID (defaults to current)")
+            .build();
+        tools
+            .tool("session_history", "Get session history with summaries")
+            .optional_int_default("limit", "Max sessions to return", 10)
+            .build();
+        tools
+            .tool(
+                "session_agents",
+                "List agent sessions for a given session or the current session",
+            )
+            .optional_str("session_id", "Parent session ID (defaults to current)")
+            .build();
 
         // Team tools
-        self.register(ToolDef {
-            name: "team_status".into(),
-            description: "Get current team status including all member states".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {}
-            }),
-        });
+        tools
+            .tool(
+                "team_status",
+                "Get current team status including all member states",
+            )
+            .build();
+        tools
+            .tool("team_log", "Get recent team activity log")
+            .optional_int_default("limit", "Max log entries", 20)
+            .build();
 
-        self.register(ToolDef {
-            name: "team_log".into(),
-            description: "Get recent team activity log".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "limit": { "type": "integer", "description": "Max log entries", "default": 20 }
-                }
-            }),
-        });
-
-        // Work tracking tools (C6)
-        self.register(ToolDef {
-            name: "work_create".into(),
-            description: "Create a new work item (task, epic, bug, story)".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "title": { "type": "string", "description": "Title of the work item" },
-                    "type": { "type": "string", "description": "Item type: task, epic, bug, story, sub-task", "default": "task" },
-                    "description": { "type": "string", "description": "Optional description" },
-                    "parent_id": { "type": "string", "description": "Parent work item ID for hierarchy" },
-                    "priority": { "type": "integer", "description": "Priority 0-3 (0=critical)", "default": 2 }
-                },
-                "required": ["title"]
-            }),
-        });
-
-        self.register(ToolDef {
-            name: "work_list".into(),
-            description: "List work items with optional filters".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "status": { "type": "string", "description": "Filter by status: pending, in_progress, blocked, completed" },
-                    "type": { "type": "string", "description": "Filter by item type" },
-                    "limit": { "type": "integer", "description": "Max results", "default": 20 }
-                }
-            }),
-        });
-
-        self.register(ToolDef {
-            name: "work_update".into(),
-            description: "Update a work item's status".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "id": { "type": "string", "description": "Work item ID" },
-                    "status": { "type": "string", "description": "New status: pending, in_progress, blocked, completed" }
-                },
-                "required": ["id", "status"]
-            }),
-        });
-
-        self.register(ToolDef {
-            name: "work_log".into(),
-            description: "Query the work tracking audit trail".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "work_item_id": { "type": "string", "description": "Filter by work item ID (optional)" },
-                    "limit": { "type": "integer", "description": "Max events", "default": 20 }
-                }
-            }),
-        });
+        // Work tracking tools
+        tools
+            .tool(
+                "work_create",
+                "Create a new work item (task, epic, bug, story)",
+            )
+            .required_str("title", "Title of the work item")
+            .optional_str_default(
+                "type",
+                "Item type: task, epic, bug, story, sub-task",
+                "task",
+            )
+            .optional_str("description", "Optional description")
+            .optional_str("parent_id", "Parent work item ID for hierarchy")
+            .optional_int_default("priority", "Priority 0-3 (0=critical)", 2)
+            .build();
+        tools
+            .tool("work_list", "List work items with optional filters")
+            .optional_str(
+                "status",
+                "Filter by status: pending, in_progress, blocked, completed",
+            )
+            .optional_str("type", "Filter by item type")
+            .optional_int_default("limit", "Max results", 20)
+            .build();
+        tools
+            .tool("work_update", "Update a work item's status")
+            .required_str("id", "Work item ID")
+            .required_str(
+                "status",
+                "New status: pending, in_progress, blocked, completed",
+            )
+            .build();
+        tools
+            .tool("work_log", "Query the work tracking audit trail")
+            .optional_str("work_item_id", "Filter by work item ID (optional)")
+            .optional_int_default("limit", "Max events", 20)
+            .build();
 
         // Conversation tools
-        self.register(ToolDef {
-            name: "conversation_history".into(),
-            description: "Get conversation messages for a session (paginated)".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "session_id": { "type": "string", "description": "Session ID" },
-                    "limit": { "type": "integer", "description": "Max messages", "default": 20 },
-                    "offset": { "type": "integer", "description": "Offset for pagination", "default": 0 }
-                },
-                "required": ["session_id"]
-            }),
-        });
-
-        self.register(ToolDef {
-            name: "conversation_search".into(),
-            description: "Search conversation messages by content (LIKE search)".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "session_id": { "type": "string", "description": "Session ID" },
-                    "query": { "type": "string", "description": "Search query" },
-                    "limit": { "type": "integer", "description": "Max results", "default": 10 }
-                },
-                "required": ["session_id", "query"]
-            }),
-        });
-
-        self.register(ToolDef {
-            name: "conversation_ingest".into(),
-            description: "Trigger transcript ingestion for a session".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "session_id": { "type": "string", "description": "Session ID" },
-                    "transcript_path": { "type": "string", "description": "Path to JSONL transcript" }
-                },
-                "required": ["session_id", "transcript_path"]
-            }),
-        });
+        tools
+            .tool(
+                "conversation_history",
+                "Get conversation messages for a session (paginated)",
+            )
+            .required_str("session_id", "Session ID")
+            .optional_int_default("limit", "Max messages", 20)
+            .optional_int_default("offset", "Offset for pagination", 0)
+            .build();
+        tools
+            .tool(
+                "conversation_search",
+                "Search conversation messages by content (LIKE search)",
+            )
+            .required_str("session_id", "Session ID")
+            .required_str("query", "Search query")
+            .optional_int_default("limit", "Max results", 10)
+            .build();
+        tools
+            .tool(
+                "conversation_ingest",
+                "Trigger transcript ingestion for a session",
+            )
+            .required_str("session_id", "Session ID")
+            .required_str("transcript_path", "Path to JSONL transcript")
+            .build();
 
         // Checkpoint tools
-        self.register(ToolDef {
-            name: "checkpoint_create".into(),
-            description: "Create a named checkpoint at the current conversation position".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "session_id": { "type": "string", "description": "Session ID" },
-                    "name": { "type": "string", "description": "Checkpoint name" },
-                    "description": { "type": "string", "description": "Optional description" }
-                },
-                "required": ["session_id", "name"]
-            }),
-        });
-
-        self.register(ToolDef {
-            name: "checkpoint_list".into(),
-            description: "List checkpoints for a session".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "session_id": { "type": "string", "description": "Session ID" }
-                },
-                "required": ["session_id"]
-            }),
-        });
-
-        self.register(ToolDef {
-            name: "checkpoint_get".into(),
-            description: "Get a checkpoint by ID or by name+session".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "id": { "type": "string", "description": "Checkpoint ID" },
-                    "session_id": { "type": "string", "description": "Session ID (for name lookup)" },
-                    "name": { "type": "string", "description": "Checkpoint name (requires session_id)" }
-                }
-            }),
-        });
+        tools
+            .tool(
+                "checkpoint_create",
+                "Create a named checkpoint at the current conversation position",
+            )
+            .required_str("session_id", "Session ID")
+            .required_str("name", "Checkpoint name")
+            .optional_str("description", "Optional description")
+            .build();
+        tools
+            .tool("checkpoint_list", "List checkpoints for a session")
+            .required_str("session_id", "Session ID")
+            .build();
+        tools
+            .tool(
+                "checkpoint_get",
+                "Get a checkpoint by ID or by name+session",
+            )
+            .optional_str("id", "Checkpoint ID")
+            .optional_str("session_id", "Session ID (for name lookup)")
+            .optional_str("name", "Checkpoint name (requires session_id)")
+            .build();
 
         // Session fork tools
-        self.register(ToolDef {
-            name: "session_fork".into(),
-            description: "Fork a session's conversation at a checkpoint or message index".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "session_id": { "type": "string", "description": "Source session ID" },
-                    "checkpoint_name": { "type": "string", "description": "Fork at this checkpoint" },
-                    "at_index": { "type": "integer", "description": "Fork at this message index" },
-                    "reason": { "type": "string", "description": "Reason for the fork" }
-                },
-                "required": ["session_id"]
-            }),
-        });
-
-        self.register(ToolDef {
-            name: "session_forks".into(),
-            description: "List forks for a session".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "session_id": { "type": "string", "description": "Session ID" }
-                },
-                "required": ["session_id"]
-            }),
-        });
-
-        self.register(ToolDef {
-            name: "session_lineage".into(),
-            description: "Trace the fork lineage of a session back to root".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "session_id": { "type": "string", "description": "Session ID" }
-                },
-                "required": ["session_id"]
-            }),
-        });
+        tools
+            .tool(
+                "session_fork",
+                "Fork a session's conversation at a checkpoint or message index",
+            )
+            .required_str("session_id", "Source session ID")
+            .optional_str("checkpoint_name", "Fork at this checkpoint")
+            .optional_int("at_index", "Fork at this message index")
+            .optional_str("reason", "Reason for the fork")
+            .build();
+        tools
+            .tool("session_forks", "List forks for a session")
+            .required_str("session_id", "Session ID")
+            .build();
+        tools
+            .tool(
+                "session_lineage",
+                "Trace the fork lineage of a session back to root",
+            )
+            .required_str("session_id", "Session ID")
+            .build();
 
         // Mailbox tools
-        self.register(ToolDef {
-            name: "mailbox_send".into(),
-            description: "Send a message to co-agents on a work item".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "work_item_id": { "type": "string", "description": "Work item ID (coordination hub)" },
-                    "from_session_id": { "type": "string", "description": "Sender session ID" },
-                    "from_agent_name": { "type": "string", "description": "Sender agent name" },
-                    "to_session_id": { "type": "string", "description": "Target session ID (omit for broadcast)" },
-                    "to_agent_name": { "type": "string", "description": "Target agent name (omit for broadcast)" },
-                    "content": { "type": "string", "description": "Message content" },
-                    "message_type": { "type": "string", "description": "Message type: text, status_update, request, result", "default": "text" },
-                    "priority": { "type": "integer", "description": "Priority 0-3 (0=highest)", "default": 2 }
-                },
-                "required": ["work_item_id", "from_session_id", "from_agent_name", "content"]
-            }),
-        });
-
-        self.register(ToolDef {
-            name: "mailbox_read".into(),
-            description: "Read unread mailbox messages for a session".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "session_id": { "type": "string", "description": "Session ID" }
-                },
-                "required": ["session_id"]
-            }),
-        });
-
-        self.register(ToolDef {
-            name: "mailbox_history".into(),
-            description: "Get mailbox message history for a work item".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "work_item_id": { "type": "string", "description": "Work item ID" },
-                    "limit": { "type": "integer", "description": "Max messages", "default": 20 }
-                },
-                "required": ["work_item_id"]
-            }),
-        });
-
-        self.register(ToolDef {
-            name: "mailbox_agents".into(),
-            description: "List agents assigned to a work item".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "work_item_id": { "type": "string", "description": "Work item ID" }
-                },
-                "required": ["work_item_id"]
-            }),
-        });
+        tools
+            .tool("mailbox_send", "Send a message to co-agents on a work item")
+            .required_str("work_item_id", "Work item ID (coordination hub)")
+            .required_str("from_session_id", "Sender session ID")
+            .required_str("from_agent_name", "Sender agent name")
+            .optional_str("to_session_id", "Target session ID (omit for broadcast)")
+            .optional_str("to_agent_name", "Target agent name (omit for broadcast)")
+            .required_str("content", "Message content")
+            .optional_str_default(
+                "message_type",
+                "Message type: text, status_update, request, result",
+                "text",
+            )
+            .optional_int_default("priority", "Priority 0-3 (0=highest)", 2)
+            .build();
+        tools
+            .tool("mailbox_read", "Read unread mailbox messages for a session")
+            .required_str("session_id", "Session ID")
+            .build();
+        tools
+            .tool(
+                "mailbox_history",
+                "Get mailbox message history for a work item",
+            )
+            .required_str("work_item_id", "Work item ID")
+            .optional_int_default("limit", "Max messages", 20)
+            .build();
+        tools
+            .tool("mailbox_agents", "List agents assigned to a work item")
+            .required_str("work_item_id", "Work item ID")
+            .build();
 
         // Guidance tools
-        self.register(ToolDef {
-            name: "guidance_rules".into(),
-            description: "List guidance rules and gate configuration".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {}
-            }),
-        });
-
-        self.register(ToolDef {
-            name: "guidance_trust".into(),
-            description: "Get trust score for a session".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "session_id": { "type": "string", "description": "Session ID (optional, defaults to current)" }
-                }
-            }),
-        });
-
-        self.register(ToolDef {
-            name: "guidance_audit".into(),
-            description: "Get gate decision audit trail".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "session_id": { "type": "string" },
-                    "limit": { "type": "integer", "description": "Max results (default 20)" }
-                }
-            }),
-        });
+        tools
+            .tool(
+                "guidance_rules",
+                "List guidance rules and gate configuration",
+            )
+            .build();
+        tools
+            .tool("guidance_trust", "Get trust score for a session")
+            .optional_str("session_id", "Session ID (optional, defaults to current)")
+            .build();
+        tools
+            .tool("guidance_audit", "Get gate decision audit trail")
+            .optional_str("session_id", "Session ID")
+            .optional_int("limit", "Max results (default 20)")
+            .build();
 
         // Work-stealing tools
-        self.register(ToolDef {
-            name: "work_claim".into(),
-            description: "Claim a work item for the current session".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "id": { "type": "string", "description": "Work item ID" }
-                },
-                "required": ["id"]
-            }),
-        });
-
-        self.register(ToolDef {
-            name: "work_release".into(),
-            description: "Release a claimed work item".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "id": { "type": "string", "description": "Work item ID" }
-                },
-                "required": ["id"]
-            }),
-        });
-
-        self.register(ToolDef {
-            name: "work_steal".into(),
-            description: "Steal a stealable work item".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "id": { "type": "string", "description": "Work item ID (optional, steals highest priority if omitted)" }
-                }
-            }),
-        });
-
-        self.register(ToolDef {
-            name: "work_heartbeat".into(),
-            description: "Update heartbeat for claimed work items".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "progress": { "type": "integer", "description": "Progress percentage (0-100)" },
-                    "id": { "type": "string", "description": "Work item ID for progress update" }
-                }
-            }),
-        });
+        tools
+            .tool("work_claim", "Claim a work item for the current session")
+            .required_str("id", "Work item ID")
+            .build();
+        tools
+            .tool("work_release", "Release a claimed work item")
+            .required_str("id", "Work item ID")
+            .build();
+        tools
+            .tool("work_steal", "Steal a stealable work item")
+            .optional_str(
+                "id",
+                "Work item ID (optional, steals highest priority if omitted)",
+            )
+            .build();
+        tools
+            .tool("work_heartbeat", "Update heartbeat for claimed work items")
+            .optional_int("progress", "Progress percentage (0-100)")
+            .optional_str("id", "Work item ID for progress update")
+            .build();
 
         // Plugin tools
-        self.register(ToolDef {
-            name: "plugin_list".into(),
-            description: "List installed plugins".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {}
-            }),
-        });
-
-        self.register(ToolDef {
-            name: "plugin_info".into(),
-            description: "Get detailed plugin information".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "name": { "type": "string", "description": "Plugin name" }
-                },
-                "required": ["name"]
-            }),
-        });
+        tools.tool("plugin_list", "List installed plugins").build();
+        tools
+            .tool("plugin_info", "Get detailed plugin information")
+            .required_str("name", "Plugin name")
+            .build();
 
         // Trajectory tools
-        self.register(ToolDef {
-            name: "trajectory_list".into(),
-            description: "List recorded trajectories".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "session_id": { "type": "string" },
-                    "status": { "type": "string", "description": "Filter by status: recording, completed, failed, judged" },
-                    "limit": { "type": "integer", "description": "Max results (default 20)" }
-                }
-            }),
-        });
-
-        self.register(ToolDef {
-            name: "trajectory_get".into(),
-            description: "Get trajectory details with steps".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "id": { "type": "string", "description": "Trajectory ID" }
-                },
-                "required": ["id"]
-            }),
-        });
-
-        self.register(ToolDef {
-            name: "trajectory_judge".into(),
-            description: "Judge a completed trajectory".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "id": { "type": "string", "description": "Trajectory ID" }
-                },
-                "required": ["id"]
-            }),
-        });
+        tools
+            .tool("trajectory_list", "List recorded trajectories")
+            .optional_str("session_id", "Session ID")
+            .optional_str(
+                "status",
+                "Filter by status: recording, completed, failed, judged",
+            )
+            .optional_int("limit", "Max results (default 20)")
+            .build();
+        tools
+            .tool("trajectory_get", "Get trajectory details with steps")
+            .required_str("id", "Trajectory ID")
+            .build();
+        tools
+            .tool("trajectory_judge", "Judge a completed trajectory")
+            .required_str("id", "Trajectory ID")
+            .build();
 
         // Work close/sync/load tools
-        self.register(ToolDef {
-            name: "work_close".into(),
-            description: "Close a work item (set status to completed)".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "id": { "type": "string", "description": "Work item ID to close" }
+        tools
+            .tool("work_close", "Close a work item (set status to completed)")
+            .required_str("id", "Work item ID to close")
+            .build();
+        tools
+            .tool(
+                "work_sync",
+                "Sync work items with external backend (kanbus/beads/claude_tasks)",
+            )
+            .build();
+        tools
+            .tool("work_load", "Show work distribution across agents")
+            .build();
+
+        // Guidance verify
+        tools
+            .tool(
+                "guidance_verify",
+                "Verify SHA-256 audit hash chain integrity",
+            )
+            .optional_str("session_id", "Session ID (optional, defaults to current)")
+            .build();
+
+        // Work stealable / status
+        tools
+            .tool(
+                "work_stealable",
+                "List work items that are available for stealing",
+            )
+            .optional_int("limit", "Max items to return (default 10)")
+            .build();
+        tools
+            .tool("work_status", "Get work item counts by status")
+            .build();
+    }
+
+    // ── Helpers ────────────────────────────────────────────────────
+
+    fn with_db<F>(f: F) -> Value
+    where
+        F: FnOnce(&MemoryDb, &FlowForgeConfig) -> flowforge_core::Result<Value>,
+    {
+        match FlowForgeConfig::load(&FlowForgeConfig::config_path()) {
+            Ok(config) => match MemoryDb::open(&config.db_path()) {
+                Ok(db) => match f(&db, &config) {
+                    Ok(v) => v,
+                    Err(e) => json!({"status": "error", "message": format!("{e}")}),
                 },
-                "required": ["id"]
-            }),
-        });
-
-        self.register(ToolDef {
-            name: "work_sync".into(),
-            description: "Sync work items with external backend (kanbus/beads/claude_tasks)".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {}
-            }),
-        });
-
-        self.register(ToolDef {
-            name: "work_load".into(),
-            description: "Show work distribution across agents".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {}
-            }),
-        });
-
-        // Guidance verify tool
-        self.register(ToolDef {
-            name: "guidance_verify".into(),
-            description: "Verify SHA-256 audit hash chain integrity".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "session_id": { "type": "string", "description": "Session ID (optional, defaults to current)" }
+                Err(e) => {
+                    json!({"status": "error", "message": format!("Failed to open database: {e}")})
                 }
-            }),
-        });
+            },
+            Err(e) => json!({"status": "error", "message": format!("{e}")}),
+        }
     }
 
-    fn register(&mut self, tool: ToolDef) {
-        self.tools.insert(tool.name.clone(), tool);
+    fn with_config<F>(f: F) -> Value
+    where
+        F: FnOnce(&FlowForgeConfig) -> flowforge_core::Result<Value>,
+    {
+        match FlowForgeConfig::load(&FlowForgeConfig::config_path()) {
+            Ok(config) => match f(&config) {
+                Ok(v) => v,
+                Err(e) => json!({"status": "error", "message": format!("{e}")}),
+            },
+            Err(e) => json!({"status": "error", "message": format!("{e}")}),
+        }
     }
 
-    // --- Helpers ---
-
-    fn open_db() -> flowforge_core::Result<MemoryDb> {
-        let config = Self::load_config()?;
-        MemoryDb::open(&config.db_path())
+    fn current_session_id(db: &MemoryDb) -> String {
+        db.get_current_session()
+            .ok()
+            .flatten()
+            .map(|s| s.id)
+            .unwrap_or_else(|| "unknown".to_string())
     }
 
-    fn load_config() -> flowforge_core::Result<FlowForgeConfig> {
-        FlowForgeConfig::load(&FlowForgeConfig::config_path())
+    // ── Memory tools ──────────────────────────────────────────────
+
+    fn memory_get(p: &Value) -> Value {
+        let key = p.str_or("key", "");
+        let namespace = p.str_or("namespace", "default");
+        Self::with_db(|db, _| {
+            let value = db.kv_get(key, namespace)?;
+            Ok(json!({"status": "ok", "key": key, "value": value}))
+        })
     }
 
-    // --- Memory tool implementations ---
-
-    fn memory_get(&self, params: &Value) -> Value {
-        let key = params.get("key").and_then(|v| v.as_str()).unwrap_or("");
-        let namespace = params
-            .get("namespace")
-            .and_then(|v| v.as_str())
+    fn memory_set(p: &Value) -> Value {
+        let key = p.str_or("key", "");
+        let value = p.str_or("value", "");
+        let namespace = p
+            .opt_str("namespace")
+            .or_else(|| p.opt_str("category"))
             .unwrap_or("default");
-
-        match Self::open_db() {
-            Ok(db) => match db.kv_get(key, namespace) {
-                Ok(value) => json!({"status": "ok", "key": key, "value": value}),
-                Err(e) => json!({"status": "error", "message": format!("{e}")}),
-            },
-            Err(e) => {
-                json!({"status": "error", "message": format!("Failed to open database: {e}")})
-            }
-        }
+        Self::with_db(|db, _| {
+            db.kv_set(key, value, namespace)?;
+            Ok(json!({"status": "ok", "key": key, "stored": true}))
+        })
     }
 
-    fn memory_set(&self, params: &Value) -> Value {
-        let key = params.get("key").and_then(|v| v.as_str()).unwrap_or("");
-        let value = params.get("value").and_then(|v| v.as_str()).unwrap_or("");
-        let namespace = params
-            .get("namespace")
-            .or_else(|| params.get("category"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("default");
-
-        match Self::open_db() {
-            Ok(db) => match db.kv_set(key, value, namespace) {
-                Ok(()) => json!({"status": "ok", "key": key, "stored": true}),
-                Err(e) => json!({"status": "error", "message": format!("{e}")}),
-            },
-            Err(e) => {
-                json!({"status": "error", "message": format!("Failed to open database: {e}")})
-            }
-        }
+    fn memory_search(p: &Value) -> Value {
+        let query = p.str_or("query", "");
+        let limit = p.u64_or("limit", 10) as usize;
+        Self::with_db(|db, _| {
+            let results = db.kv_search(query, limit)?;
+            let entries: Vec<Value> = results
+                .iter()
+                .map(|(k, v, ns)| json!({"key": k, "value": v, "namespace": ns}))
+                .collect();
+            Ok(json!({"status": "ok", "query": query, "results": entries}))
+        })
     }
 
-    fn memory_search(&self, params: &Value) -> Value {
-        let query = params.get("query").and_then(|v| v.as_str()).unwrap_or("");
-        let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
-
-        match Self::open_db() {
-            Ok(db) => match db.kv_search(query, limit) {
-                Ok(results) => {
-                    let entries: Vec<Value> = results
-                        .iter()
-                        .map(|(k, v, ns)| json!({"key": k, "value": v, "namespace": ns}))
-                        .collect();
-                    json!({"status": "ok", "query": query, "results": entries})
-                }
-                Err(e) => json!({"status": "error", "message": format!("{e}")}),
-            },
-            Err(e) => {
-                json!({"status": "error", "message": format!("Failed to open database: {e}")})
-            }
-        }
+    fn memory_delete(p: &Value) -> Value {
+        let key = p.str_or("key", "");
+        let namespace = p.str_or("namespace", "default");
+        Self::with_db(|db, _| {
+            db.kv_delete(key, namespace)?;
+            Ok(json!({"status": "ok", "key": key, "deleted": true}))
+        })
     }
 
-    fn memory_delete(&self, params: &Value) -> Value {
-        let key = params.get("key").and_then(|v| v.as_str()).unwrap_or("");
-        let namespace = params
-            .get("namespace")
-            .and_then(|v| v.as_str())
-            .unwrap_or("default");
-
-        match Self::open_db() {
-            Ok(db) => match db.kv_delete(key, namespace) {
-                Ok(()) => json!({"status": "ok", "key": key, "deleted": true}),
-                Err(e) => json!({"status": "error", "message": format!("{e}")}),
-            },
-            Err(e) => {
-                json!({"status": "error", "message": format!("Failed to open database: {e}")})
-            }
-        }
+    fn memory_list(p: &Value) -> Value {
+        let namespace = p.str_or("category", "default");
+        let limit = p.u64_or("limit", 50) as usize;
+        Self::with_db(|db, _| {
+            let entries = db.kv_list(namespace)?;
+            let entries: Vec<Value> = entries
+                .iter()
+                .take(limit)
+                .map(|(k, v)| json!({"key": k, "value": v}))
+                .collect();
+            Ok(json!({"status": "ok", "entries": entries}))
+        })
     }
 
-    fn memory_list(&self, params: &Value) -> Value {
-        let namespace = params
-            .get("category")
-            .and_then(|v| v.as_str())
-            .unwrap_or("default");
-        let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
-
-        match Self::open_db() {
-            Ok(db) => match db.kv_list(namespace) {
-                Ok(entries) => {
-                    let entries: Vec<Value> = entries
-                        .iter()
-                        .take(limit)
-                        .map(|(k, v)| json!({"key": k, "value": v}))
-                        .collect();
-                    json!({"status": "ok", "entries": entries})
-                }
-                Err(e) => json!({"status": "error", "message": format!("{e}")}),
-            },
-            Err(e) => {
-                json!({"status": "error", "message": format!("Failed to open database: {e}")})
-            }
-        }
-    }
-
-    fn memory_import(&self, params: &Value) -> Value {
-        let entries = match params.get("entries").and_then(|v| v.as_array()) {
-            Some(arr) => arr,
+    fn memory_import(p: &Value) -> Value {
+        let entries = match p.get("entries").and_then(|v| v.as_array()) {
+            Some(arr) => arr.clone(),
             None => return json!({"status": "error", "message": "missing entries array"}),
         };
         let total = entries.len();
-
-        match Self::open_db() {
-            Ok(db) => {
-                let mut imported = 0usize;
-                for entry in entries {
-                    let key = entry.get("key").and_then(|v| v.as_str()).unwrap_or("");
-                    let value = entry.get("value").and_then(|v| v.as_str()).unwrap_or("");
-                    let namespace = entry
-                        .get("namespace")
-                        .or_else(|| entry.get("category"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("default");
-                    if db.kv_set(key, value, namespace).is_ok() {
-                        imported += 1;
-                    }
+        Self::with_db(|db, _| {
+            let mut imported = 0usize;
+            for entry in &entries {
+                let key = entry.str_or("key", "");
+                let value = entry.str_or("value", "");
+                let namespace = entry
+                    .opt_str("namespace")
+                    .or_else(|| entry.opt_str("category"))
+                    .unwrap_or("default");
+                if db.kv_set(key, value, namespace).is_ok() {
+                    imported += 1;
                 }
-                json!({"status": "ok", "imported": imported, "total": total})
             }
-            Err(e) => {
-                json!({"status": "error", "message": format!("Failed to open database: {e}")})
-            }
-        }
+            Ok(json!({"status": "ok", "imported": imported, "total": total}))
+        })
     }
 
-    // --- Learning tool implementations ---
+    // ── Learning tools ────────────────────────────────────────────
 
-    fn learning_store(&self, params: &Value) -> Value {
-        let content = params.get("content").and_then(|v| v.as_str()).unwrap_or("");
-        let category = params
-            .get("category")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-
-        match Self::load_config().and_then(|config| {
-            let db = MemoryDb::open(&config.db_path())?;
-            let store = PatternStore::new(&db, &config.patterns);
+    fn learning_store(p: &Value) -> Value {
+        let content = p.str_or("content", "");
+        let category = p.str_or("category", "");
+        Self::with_db(|db, config| {
+            let store = PatternStore::new(db, &config.patterns);
             let id = store.store_short_term(content, category)?;
-            Ok(id)
-        }) {
-            Ok(id) => json!({"status": "ok", "pattern_id": id}),
-            Err(e) => json!({"status": "error", "message": format!("{e}")}),
-        }
+            Ok(json!({"status": "ok", "pattern_id": id}))
+        })
     }
 
-    fn learning_search(&self, params: &Value) -> Value {
-        let query = params.get("query").and_then(|v| v.as_str()).unwrap_or("");
-        let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
-
-        match Self::load_config().and_then(|config| {
-            let db = MemoryDb::open(&config.db_path())?;
-            let store = PatternStore::new(&db, &config.patterns);
-            store.search_all_patterns(query, limit)
-        }) {
-            Ok(results) => {
-                let patterns: Vec<Value> = results
-                    .iter()
-                    .map(|m| {
-                        json!({
-                            "id": m.id,
-                            "content": m.content,
-                            "category": m.category,
-                            "confidence": m.confidence,
-                            "usage_count": m.usage_count,
-                            "tier": format!("{:?}", m.tier),
-                            "similarity": m.similarity,
-                        })
+    fn learning_search(p: &Value) -> Value {
+        let query = p.str_or("query", "");
+        let limit = p.u64_or("limit", 10) as usize;
+        Self::with_db(|db, config| {
+            let store = PatternStore::new(db, &config.patterns);
+            let results = store.search_all_patterns(query, limit)?;
+            let patterns: Vec<Value> = results
+                .iter()
+                .map(|m| {
+                    json!({
+                        "id": m.id,
+                        "content": m.content,
+                        "category": m.category,
+                        "confidence": m.confidence,
+                        "usage_count": m.usage_count,
+                        "tier": format!("{:?}", m.tier),
+                        "similarity": m.similarity,
                     })
-                    .collect();
-                json!({"status": "ok", "patterns": patterns})
-            }
-            Err(e) => json!({"status": "error", "message": format!("{e}")}),
-        }
+                })
+                .collect();
+            Ok(json!({"status": "ok", "patterns": patterns}))
+        })
     }
 
-    fn learning_feedback(&self, params: &Value) -> Value {
-        let pattern_id = params
-            .get("pattern_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        let positive = params
-            .get("positive")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(true);
-
-        match Self::load_config().and_then(|config| {
-            let db = MemoryDb::open(&config.db_path())?;
-            let store = PatternStore::new(&db, &config.patterns);
-            store.record_feedback(pattern_id, positive)
-        }) {
-            Ok(()) => json!({"status": "ok", "pattern_id": pattern_id, "updated": true}),
-            Err(e) => json!({"status": "error", "message": format!("{e}")}),
-        }
+    fn learning_feedback(p: &Value) -> Value {
+        let pattern_id = p.str_or("pattern_id", "");
+        let positive = p.bool_or("positive", true);
+        Self::with_db(|db, config| {
+            let store = PatternStore::new(db, &config.patterns);
+            store.record_feedback(pattern_id, positive)?;
+            Ok(json!({"status": "ok", "pattern_id": pattern_id, "updated": true}))
+        })
     }
 
-    fn learning_stats(&self, _params: &Value) -> Value {
-        match Self::open_db() {
-            Ok(db) => {
-                let short = db.count_patterns_short().unwrap_or(0);
-                let long = db.count_patterns_long().unwrap_or(0);
+    fn learning_stats(_p: &Value) -> Value {
+        Self::with_db(|db, _| {
+            let short = db.count_patterns_short().unwrap_or(0);
+            let long = db.count_patterns_long().unwrap_or(0);
+            let (routing_hits, routing_total) = db.routing_accuracy_stats().unwrap_or((0, 0));
+            let (pattern_successes, pattern_total) = db.pattern_hit_rate().unwrap_or((0, 0));
+            let (with_conf, without_conf, with_count, without_count) =
+                db.context_effectiveness_stats().unwrap_or((0.0, 0.0, 0, 0));
 
-                // Context effectiveness metrics
-                let (routing_hits, routing_total) = db.routing_accuracy_stats().unwrap_or((0, 0));
-                let (pattern_successes, pattern_total) = db.pattern_hit_rate().unwrap_or((0, 0));
-                let (with_conf, without_conf, with_count, without_count) =
-                    db.context_effectiveness_stats().unwrap_or((0.0, 0.0, 0, 0));
-
-                json!({
-                    "status": "ok",
-                    "short_term_count": short,
-                    "long_term_count": long,
-                    "total": short + long,
-                    "context_effectiveness": {
-                        "routing_accuracy": {
-                            "hits": routing_hits,
-                            "total": routing_total,
-                            "rate": if routing_total > 0 { routing_hits as f64 / routing_total as f64 } else { 0.0 },
-                        },
-                        "pattern_hit_rate": {
-                            "successes": pattern_successes,
-                            "total": pattern_total,
-                            "rate": if pattern_total > 0 { pattern_successes as f64 / pattern_total as f64 } else { 0.0 },
-                        },
-                        "avg_confidence": {
-                            "with_context": with_conf,
-                            "without_context": without_conf,
-                            "with_count": with_count,
-                            "without_count": without_count,
-                        },
+            Ok(json!({
+                "status": "ok",
+                "short_term_count": short,
+                "long_term_count": long,
+                "total": short + long,
+                "context_effectiveness": {
+                    "routing_accuracy": {
+                        "hits": routing_hits,
+                        "total": routing_total,
+                        "rate": if routing_total > 0 { routing_hits as f64 / routing_total as f64 } else { 0.0 },
                     },
+                    "pattern_hit_rate": {
+                        "successes": pattern_successes,
+                        "total": pattern_total,
+                        "rate": if pattern_total > 0 { pattern_successes as f64 / pattern_total as f64 } else { 0.0 },
+                    },
+                    "avg_confidence": {
+                        "with_context": with_conf,
+                        "without_context": without_conf,
+                        "with_count": with_count,
+                        "without_count": without_count,
+                    },
+                },
+            }))
+        })
+    }
+
+    fn learning_clusters(_p: &Value) -> Value {
+        Self::with_db(|db, _| {
+            let clusters = db.get_all_clusters().unwrap_or_default();
+            let outlier_count = db.count_outlier_vectors().unwrap_or(0);
+            let cluster_info: Vec<Value> = clusters
+                .iter()
+                .map(|c| {
+                    json!({
+                        "id": c.id,
+                        "member_count": c.member_count,
+                        "p95_distance": c.p95_distance,
+                        "avg_confidence": c.avg_confidence,
+                    })
                 })
-            }
-            Err(e) => {
-                json!({"status": "error", "message": format!("Failed to open database: {e}")})
-            }
-        }
+                .collect();
+            Ok(json!({
+                "status": "ok",
+                "cluster_count": clusters.len(),
+                "outlier_count": outlier_count,
+                "clusters": cluster_info,
+            }))
+        })
     }
 
-    fn learning_clusters(&self, _params: &Value) -> Value {
-        match Self::open_db() {
-            Ok(db) => {
-                let clusters = db.get_all_clusters().unwrap_or_default();
-                let outlier_count = db.count_outlier_vectors().unwrap_or(0);
-                let cluster_info: Vec<Value> = clusters
-                    .iter()
-                    .map(|c| {
-                        json!({
-                            "id": c.id,
-                            "member_count": c.member_count,
-                            "p95_distance": c.p95_distance,
-                            "avg_confidence": c.avg_confidence,
+    // ── Agent tools ───────────────────────────────────────────────
+
+    fn agents_list(p: &Value) -> Value {
+        let source_filter = p.opt_str("source");
+        Self::with_config(|config| {
+            let registry = AgentRegistry::load(&config.agents)?;
+            let agents: Vec<Value> = registry
+                .list()
+                .iter()
+                .filter(|a| {
+                    source_filter
+                        .map(|s| {
+                            format!("{:?}", a.source)
+                                .to_lowercase()
+                                .contains(&s.to_lowercase())
                         })
-                    })
-                    .collect();
-                json!({
-                    "status": "ok",
-                    "cluster_count": clusters.len(),
-                    "outlier_count": outlier_count,
-                    "clusters": cluster_info,
+                        .unwrap_or(true)
                 })
-            }
-            Err(e) => {
-                json!({"status": "error", "message": format!("Failed to open database: {e}")})
-            }
-        }
+                .map(|a| {
+                    json!({
+                        "name": a.name,
+                        "description": a.description,
+                        "capabilities": a.capabilities,
+                        "source": format!("{:?}", a.source),
+                    })
+                })
+                .collect();
+            Ok(json!({"status": "ok", "agents": agents}))
+        })
     }
 
-    // --- Agent tool implementations ---
-
-    fn agents_list(&self, params: &Value) -> Value {
-        let source_filter = params.get("source").and_then(|v| v.as_str());
-
-        match Self::load_config().and_then(|config| AgentRegistry::load(&config.agents)) {
-            Ok(registry) => {
-                let agents: Vec<Value> = registry
-                    .list()
-                    .iter()
-                    .filter(|a| {
-                        source_filter
-                            .map(|s| {
-                                format!("{:?}", a.source)
-                                    .to_lowercase()
-                                    .contains(&s.to_lowercase())
-                            })
-                            .unwrap_or(true)
-                    })
-                    .map(|a| {
-                        json!({
-                            "name": a.name,
-                            "description": a.description,
-                            "capabilities": a.capabilities,
-                            "source": format!("{:?}", a.source),
-                        })
-                    })
-                    .collect();
-                json!({"status": "ok", "agents": agents})
-            }
-            Err(e) => json!({"status": "error", "message": format!("{e}")}),
-        }
-    }
-
-    fn agents_route(&self, params: &Value) -> Value {
-        let task = params.get("task").and_then(|v| v.as_str()).unwrap_or("");
-        let top_k = params.get("top_k").and_then(|v| v.as_u64()).unwrap_or(3) as usize;
-
-        match Self::load_config().and_then(|config| {
-            let db = MemoryDb::open(&config.db_path())?;
+    fn agents_route(p: &Value) -> Value {
+        let task = p.str_or("task", "");
+        let top_k = p.u64_or("top_k", 3) as usize;
+        Self::with_db(|db, config| {
             let registry = AgentRegistry::load(&config.agents)?;
             let router = AgentRouter::new(&config.routing);
-
             let weights_vec = db.get_all_routing_weights()?;
             let mut learned_weights: HashMap<(String, String), f64> = HashMap::new();
             for w in &weights_vec {
                 learned_weights.insert((w.task_pattern.clone(), w.agent_name.clone()), w.weight);
             }
-
             let agent_refs: Vec<&_> = registry.list();
             let results = router.route(task, &agent_refs, &learned_weights, None);
-            Ok(results)
-        }) {
-            Ok(results) => {
-                let candidates: Vec<Value> = results
-                    .iter()
-                    .take(top_k)
-                    .map(|r| {
-                        json!({
-                            "agent_name": r.agent_name,
-                            "confidence": r.confidence,
-                            "breakdown": {
-                                "pattern_score": r.breakdown.pattern_score,
-                                "capability_score": r.breakdown.capability_score,
-                                "learned_score": r.breakdown.learned_score,
-                                "context_score": r.breakdown.context_score,
-                                "priority_score": r.breakdown.priority_score,
-                            },
-                        })
+            let candidates: Vec<Value> = results
+                .iter()
+                .take(top_k)
+                .map(|r| {
+                    json!({
+                        "agent_name": r.agent_name,
+                        "confidence": r.confidence,
+                        "breakdown": {
+                            "pattern_score": r.breakdown.pattern_score,
+                            "capability_score": r.breakdown.capability_score,
+                            "learned_score": r.breakdown.learned_score,
+                            "context_score": r.breakdown.context_score,
+                            "priority_score": r.breakdown.priority_score,
+                        },
                     })
-                    .collect();
-                json!({"status": "ok", "candidates": candidates})
-            }
-            Err(e) => json!({"status": "error", "message": format!("{e}")}),
-        }
+                })
+                .collect();
+            Ok(json!({"status": "ok", "candidates": candidates}))
+        })
     }
 
-    fn agents_info(&self, params: &Value) -> Value {
-        let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
-
-        match Self::load_config().and_then(|config| AgentRegistry::load(&config.agents)) {
-            Ok(registry) => match registry.get(name) {
-                Some(agent) => json!({
+    fn agents_info(p: &Value) -> Value {
+        let name = p.str_or("name", "");
+        Self::with_config(|config| {
+            let registry = AgentRegistry::load(&config.agents)?;
+            match registry.get(name) {
+                Some(agent) => Ok(json!({
                     "status": "ok",
                     "agent": {
                         "name": agent.name,
@@ -1154,164 +805,130 @@ impl ToolRegistry {
                         "source": format!("{:?}", agent.source),
                         "body": agent.body,
                     },
-                }),
-                None => json!({"status": "error", "message": "Agent not found"}),
-            },
-            Err(e) => json!({"status": "error", "message": format!("{e}")}),
-        }
-    }
-
-    // --- Session tool implementations ---
-
-    fn session_status(&self, _params: &Value) -> Value {
-        match Self::open_db() {
-            Ok(db) => match db.get_current_session() {
-                Ok(Some(session)) => {
-                    let agents: Vec<Value> = db
-                        .get_agent_sessions(&session.id)
-                        .unwrap_or_default()
-                        .iter()
-                        .filter(|a| a.ended_at.is_none())
-                        .map(|a| {
-                            json!({
-                                "agent_id": a.agent_id,
-                                "agent_type": a.agent_type,
-                                "status": a.status.to_string(),
-                            })
-                        })
-                        .collect();
-                    json!({
-                        "status": "ok",
-                        "session": {
-                            "id": session.id,
-                            "started_at": session.started_at.to_rfc3339(),
-                            "cwd": session.cwd,
-                            "edits": session.edits,
-                            "commands": session.commands,
-                            "summary": session.summary,
-                        },
-                        "agents": agents,
-                    })
-                }
-                Ok(None) => json!({"status": "ok", "session": null}),
-                Err(e) => json!({"status": "error", "message": format!("{e}")}),
-            },
-            Err(e) => {
-                json!({"status": "error", "message": format!("Failed to open database: {e}")})
+                })),
+                None => Ok(json!({"status": "error", "message": "Agent not found"})),
             }
-        }
+        })
     }
 
-    fn session_metrics(&self, params: &Value) -> Value {
-        let session_id = params.get("session_id").and_then(|v| v.as_str());
+    // ── Session tools ─────────────────────────────────────────────
 
-        match Self::open_db() {
-            Ok(db) => {
-                let session = if let Some(id) = session_id {
-                    db.list_sessions(1000)
-                        .ok()
-                        .and_then(|sessions| sessions.into_iter().find(|s| s.id == id))
-                } else {
-                    db.get_current_session().ok().flatten()
-                };
-                match session {
-                    Some(s) => json!({
-                        "status": "ok",
-                        "session_id": s.id,
+    fn session_status(_p: &Value) -> Value {
+        Self::with_db(|db, _| match db.get_current_session()? {
+            Some(session) => {
+                let agents: Vec<Value> = db
+                    .get_agent_sessions(&session.id)
+                    .unwrap_or_default()
+                    .iter()
+                    .filter(|a| a.ended_at.is_none())
+                    .map(|a| {
+                        json!({
+                            "agent_id": a.agent_id,
+                            "agent_type": a.agent_type,
+                            "status": a.status.to_string(),
+                        })
+                    })
+                    .collect();
+                Ok(json!({
+                    "status": "ok",
+                    "session": {
+                        "id": session.id,
+                        "started_at": session.started_at.to_rfc3339(),
+                        "cwd": session.cwd,
+                        "edits": session.edits,
+                        "commands": session.commands,
+                        "summary": session.summary,
+                    },
+                    "agents": agents,
+                }))
+            }
+            None => Ok(json!({"status": "ok", "session": null})),
+        })
+    }
+
+    fn session_metrics(p: &Value) -> Value {
+        let session_id = p.opt_str("session_id");
+        Self::with_db(|db, _| {
+            let session = if let Some(id) = session_id {
+                db.list_sessions(1000)
+                    .ok()
+                    .and_then(|sessions| sessions.into_iter().find(|s| s.id == id))
+            } else {
+                db.get_current_session().ok().flatten()
+            };
+            match session {
+                Some(s) => Ok(json!({
+                    "status": "ok",
+                    "session_id": s.id,
+                    "edits": s.edits,
+                    "commands": s.commands,
+                })),
+                None => {
+                    Ok(json!({"status": "ok", "session_id": session_id, "edits": 0, "commands": 0}))
+                }
+            }
+        })
+    }
+
+    fn session_history(p: &Value) -> Value {
+        let limit = p.u64_or("limit", 10) as usize;
+        Self::with_db(|db, _| {
+            let sessions = db.list_sessions(limit)?;
+            let entries: Vec<Value> = sessions
+                .iter()
+                .map(|s| {
+                    json!({
+                        "id": s.id,
+                        "started_at": s.started_at.to_rfc3339(),
+                        "ended_at": s.ended_at.map(|t| t.to_rfc3339()),
+                        "cwd": s.cwd,
                         "edits": s.edits,
                         "commands": s.commands,
-                    }),
-                    None => {
-                        json!({"status": "ok", "session_id": session_id, "edits": 0, "commands": 0})
-                    }
-                }
-            }
-            Err(e) => {
-                json!({"status": "error", "message": format!("Failed to open database: {e}")})
-            }
-        }
+                        "summary": s.summary,
+                    })
+                })
+                .collect();
+            Ok(json!({"status": "ok", "sessions": entries}))
+        })
     }
 
-    fn session_history(&self, params: &Value) -> Value {
-        let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
-
-        match Self::open_db() {
-            Ok(db) => match db.list_sessions(limit) {
-                Ok(sessions) => {
-                    let entries: Vec<Value> = sessions
-                        .iter()
-                        .map(|s| {
-                            json!({
-                                "id": s.id,
-                                "started_at": s.started_at.to_rfc3339(),
-                                "ended_at": s.ended_at.map(|t| t.to_rfc3339()),
-                                "cwd": s.cwd,
-                                "edits": s.edits,
-                                "commands": s.commands,
-                                "summary": s.summary,
-                            })
-                        })
-                        .collect();
-                    json!({"status": "ok", "sessions": entries})
+    fn session_agents(p: &Value) -> Value {
+        let session_id = p.opt_str("session_id");
+        Self::with_db(|db, _| {
+            let parent_id = if let Some(id) = session_id {
+                id.to_string()
+            } else {
+                match db.get_current_session()? {
+                    Some(s) => s.id,
+                    None => return Ok(json!({"status": "ok", "agents": [], "count": 0})),
                 }
-                Err(e) => json!({"status": "error", "message": format!("{e}")}),
-            },
-            Err(e) => {
-                json!({"status": "error", "message": format!("Failed to open database: {e}")})
-            }
-        }
+            };
+            let agents = db.get_agent_sessions(&parent_id)?;
+            let entries: Vec<Value> = agents
+                .iter()
+                .map(|a| {
+                    let duration_seconds = a.ended_at.map(|end| (end - a.started_at).num_seconds());
+                    json!({
+                        "id": a.id,
+                        "agent_id": a.agent_id,
+                        "agent_type": a.agent_type,
+                        "status": a.status.to_string(),
+                        "started_at": a.started_at.to_rfc3339(),
+                        "ended_at": a.ended_at.map(|t| t.to_rfc3339()),
+                        "edits": a.edits,
+                        "commands": a.commands,
+                        "task_id": a.task_id,
+                        "duration_seconds": duration_seconds,
+                    })
+                })
+                .collect();
+            Ok(json!({"status": "ok", "agents": entries, "count": entries.len()}))
+        })
     }
 
-    fn session_agents(&self, params: &Value) -> Value {
-        let session_id = params.get("session_id").and_then(|v| v.as_str());
+    // ── Team tools ────────────────────────────────────────────────
 
-        match Self::open_db() {
-            Ok(db) => {
-                let parent_id = if let Some(id) = session_id {
-                    id.to_string()
-                } else {
-                    match db.get_current_session() {
-                        Ok(Some(s)) => s.id,
-                        Ok(None) => return json!({"status": "ok", "agents": [], "count": 0}),
-                        Err(e) => return json!({"status": "error", "message": format!("{e}")}),
-                    }
-                };
-
-                match db.get_agent_sessions(&parent_id) {
-                    Ok(agents) => {
-                        let entries: Vec<Value> = agents
-                            .iter()
-                            .map(|a| {
-                                let duration_seconds =
-                                    a.ended_at.map(|end| (end - a.started_at).num_seconds());
-                                json!({
-                                    "id": a.id,
-                                    "agent_id": a.agent_id,
-                                    "agent_type": a.agent_type,
-                                    "status": a.status.to_string(),
-                                    "started_at": a.started_at.to_rfc3339(),
-                                    "ended_at": a.ended_at.map(|t| t.to_rfc3339()),
-                                    "edits": a.edits,
-                                    "commands": a.commands,
-                                    "task_id": a.task_id,
-                                    "duration_seconds": duration_seconds,
-                                })
-                            })
-                            .collect();
-                        json!({"status": "ok", "agents": entries, "count": entries.len()})
-                    }
-                    Err(e) => json!({"status": "error", "message": format!("{e}")}),
-                }
-            }
-            Err(e) => {
-                json!({"status": "error", "message": format!("Failed to open database: {e}")})
-            }
-        }
-    }
-
-    // --- Team tool implementations ---
-
-    fn team_status(&self, _params: &Value) -> Value {
+    fn team_status(_p: &Value) -> Value {
         let mgr = TmuxStateManager::new(FlowForgeConfig::tmux_state_path());
         match mgr.load() {
             Ok(state) => {
@@ -1329,26 +946,30 @@ impl ToolRegistry {
                     })
                     .collect();
 
-                // Enrich with DB-backed agent sessions
-                let agent_sessions: Vec<Value> = if let Ok(db) = Self::open_db() {
-                    db.get_active_agent_sessions()
-                        .unwrap_or_default()
-                        .iter()
-                        .map(|a| {
-                            json!({
-                                "id": a.id,
-                                "agent_id": a.agent_id,
-                                "agent_type": a.agent_type,
-                                "status": a.status.to_string(),
-                                "started_at": a.started_at.to_rfc3339(),
-                                "edits": a.edits,
-                                "commands": a.commands,
-                            })
-                        })
-                        .collect()
-                } else {
-                    vec![]
-                };
+                let agent_sessions: Vec<Value> =
+                    if let Ok(config) = FlowForgeConfig::load(&FlowForgeConfig::config_path()) {
+                        if let Ok(db) = MemoryDb::open(&config.db_path()) {
+                            db.get_active_agent_sessions()
+                                .unwrap_or_default()
+                                .iter()
+                                .map(|a| {
+                                    json!({
+                                        "id": a.id,
+                                        "agent_id": a.agent_id,
+                                        "agent_type": a.agent_type,
+                                        "status": a.status.to_string(),
+                                        "started_at": a.started_at.to_rfc3339(),
+                                        "edits": a.edits,
+                                        "commands": a.commands,
+                                    })
+                                })
+                                .collect()
+                        } else {
+                            vec![]
+                        }
+                    } else {
+                        vec![]
+                    };
 
                 json!({
                     "status": "ok",
@@ -1364,9 +985,8 @@ impl ToolRegistry {
         }
     }
 
-    fn team_log(&self, params: &Value) -> Value {
-        let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
-
+    fn team_log(p: &Value) -> Value {
+        let limit = p.u64_or("limit", 20) as usize;
         let mgr = TmuxStateManager::new(FlowForgeConfig::tmux_state_path());
         match mgr.load() {
             Ok(state) => {
@@ -1377,24 +997,18 @@ impl ToolRegistry {
         }
     }
 
-    // --- Work tracking tool implementations (C6) ---
+    // ── Work tracking tools ───────────────────────────────────────
 
-    fn work_create(&self, params: &Value) -> Value {
-        let title = params.get("title").and_then(|v| v.as_str()).unwrap_or("");
-        let item_type = params
-            .get("type")
-            .and_then(|v| v.as_str())
-            .unwrap_or("task");
-        let description = params.get("description").and_then(|v| v.as_str());
-        let parent_id = params.get("parent_id").and_then(|v| v.as_str());
-        let priority = params.get("priority").and_then(|v| v.as_i64()).unwrap_or(2) as i32;
-
-        match Self::load_config().and_then(|config| {
-            let db = MemoryDb::open(&config.db_path())?;
+    fn work_create(p: &Value) -> Value {
+        let title = p.str_or("title", "");
+        let item_type = p.str_or("type", "task");
+        let description = p.opt_str("description");
+        let parent_id = p.opt_str("parent_id");
+        let priority = p.i64_or("priority", 2) as i32;
+        Self::with_db(|db, config| {
             let now = chrono::Utc::now();
             let backend =
                 flowforge_core::work_tracking::detect_backend(&config.work_tracking).to_string();
-
             let item = flowforge_core::WorkItem {
                 id: uuid::Uuid::new_v4().to_string(),
                 external_id: None,
@@ -1418,669 +1032,465 @@ impl ToolRegistry {
                 progress: 0,
                 stealable: false,
             };
-
-            flowforge_core::work_tracking::create_item(&db, &config.work_tracking, &item)?;
-            Ok(item.id)
-        }) {
-            Ok(id) => json!({"status": "ok", "id": id, "title": title}),
-            Err(e) => json!({"status": "error", "message": format!("{e}")}),
-        }
+            flowforge_core::work_tracking::create_item(db, &config.work_tracking, &item)?;
+            Ok(json!({"status": "ok", "id": item.id, "title": title}))
+        })
     }
 
-    fn work_list(&self, params: &Value) -> Value {
-        let status = params.get("status").and_then(|v| v.as_str());
-        let item_type = params.get("type").and_then(|v| v.as_str());
-        let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
-
-        match Self::open_db() {
-            Ok(db) => {
-                let filter = flowforge_core::WorkFilter {
-                    status: status.map(|s| s.to_string()),
-                    item_type: item_type.map(|s| s.to_string()),
-                    limit: Some(limit),
-                    ..Default::default()
-                };
-                match db.list_work_items(&filter) {
-                    Ok(items) => {
-                        let entries: Vec<Value> = items
-                            .iter()
-                            .map(|i| {
-                                json!({
-                                    "id": i.id,
-                                    "title": i.title,
-                                    "type": i.item_type,
-                                    "status": i.status,
-                                    "assignee": i.assignee,
-                                    "priority": i.priority,
-                                    "backend": i.backend,
-                                    "created_at": i.created_at.to_rfc3339(),
-                                })
-                            })
-                            .collect();
-                        json!({"status": "ok", "items": entries, "count": entries.len()})
-                    }
-                    Err(e) => json!({"status": "error", "message": format!("{e}")}),
-                }
-            }
-            Err(e) => {
-                json!({"status": "error", "message": format!("Failed to open database: {e}")})
-            }
-        }
+    fn work_list(p: &Value) -> Value {
+        let status = p.opt_str("status");
+        let item_type = p.opt_str("type");
+        let limit = p.u64_or("limit", 20) as usize;
+        Self::with_db(|db, _| {
+            let filter = flowforge_core::WorkFilter {
+                status: status.map(|s| s.to_string()),
+                item_type: item_type.map(|s| s.to_string()),
+                limit: Some(limit),
+                ..Default::default()
+            };
+            let items = db.list_work_items(&filter)?;
+            let entries: Vec<Value> = items
+                .iter()
+                .map(|i| {
+                    json!({
+                        "id": i.id,
+                        "title": i.title,
+                        "type": i.item_type,
+                        "status": i.status,
+                        "assignee": i.assignee,
+                        "priority": i.priority,
+                        "backend": i.backend,
+                        "created_at": i.created_at.to_rfc3339(),
+                    })
+                })
+                .collect();
+            Ok(json!({"status": "ok", "items": entries, "count": entries.len()}))
+        })
     }
 
-    fn work_update(&self, params: &Value) -> Value {
-        let id = params.get("id").and_then(|v| v.as_str()).unwrap_or("");
-        let new_status = params.get("status").and_then(|v| v.as_str()).unwrap_or("");
-
-        match Self::load_config().and_then(|config| {
-            let db = MemoryDb::open(&config.db_path())?;
+    fn work_update(p: &Value) -> Value {
+        let id = p.str_or("id", "");
+        let new_status = p.str_or("status", "");
+        Self::with_db(|db, config| {
             flowforge_core::work_tracking::update_status(
-                &db,
+                db,
                 &config.work_tracking,
                 id,
                 new_status,
                 "mcp",
             )?;
-            Ok(())
-        }) {
-            Ok(()) => json!({"status": "ok", "id": id, "new_status": new_status}),
-            Err(e) => json!({"status": "error", "message": format!("{e}")}),
-        }
+            Ok(json!({"status": "ok", "id": id, "new_status": new_status}))
+        })
     }
 
-    // --- Conversation tool implementations ---
-
-    fn conversation_history(&self, params: &Value) -> Value {
-        let session_id = params
-            .get("session_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
-        let offset = params.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-
-        match Self::open_db() {
-            Ok(db) => {
-                let total = db.get_conversation_message_count(session_id).unwrap_or(0);
-                match db.get_conversation_messages(session_id, limit, offset) {
-                    Ok(msgs) => {
-                        let entries: Vec<Value> = msgs
-                            .iter()
-                            .map(|m| {
-                                json!({
-                                    "message_index": m.message_index,
-                                    "role": m.role,
-                                    "message_type": m.message_type,
-                                    "content": m.content,
-                                    "model": m.model,
-                                    "timestamp": m.timestamp.to_rfc3339(),
-                                    "source": m.source,
-                                })
-                            })
-                            .collect();
-                        json!({"status": "ok", "messages": entries, "total": total})
-                    }
-                    Err(e) => json!({"status": "error", "message": format!("{e}")}),
-                }
-            }
-            Err(e) => {
-                json!({"status": "error", "message": format!("Failed to open database: {e}")})
-            }
-        }
-    }
-
-    fn conversation_search(&self, params: &Value) -> Value {
-        let session_id = params
-            .get("session_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        let query = params.get("query").and_then(|v| v.as_str()).unwrap_or("");
-        let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
-
-        match Self::open_db() {
-            Ok(db) => match db.search_conversation_messages(session_id, query, limit) {
-                Ok(msgs) => {
-                    let entries: Vec<Value> = msgs
-                        .iter()
-                        .map(|m| {
-                            json!({
-                                "message_index": m.message_index,
-                                "role": m.role,
-                                "content": m.content,
-                                "timestamp": m.timestamp.to_rfc3339(),
-                            })
-                        })
-                        .collect();
-                    json!({"status": "ok", "results": entries, "count": entries.len()})
-                }
-                Err(e) => json!({"status": "error", "message": format!("{e}")}),
-            },
-            Err(e) => {
-                json!({"status": "error", "message": format!("Failed to open database: {e}")})
-            }
-        }
-    }
-
-    fn conversation_ingest(&self, params: &Value) -> Value {
-        let session_id = params
-            .get("session_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        let path = params
-            .get("transcript_path")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-
-        match Self::open_db() {
-            Ok(db) => match db.ingest_transcript(session_id, path) {
-                Ok(count) => json!({"status": "ok", "ingested": count, "session_id": session_id}),
-                Err(e) => json!({"status": "error", "message": format!("{e}")}),
-            },
-            Err(e) => {
-                json!({"status": "error", "message": format!("Failed to open database: {e}")})
-            }
-        }
-    }
-
-    // --- Checkpoint tool implementations ---
-
-    fn checkpoint_create(&self, params: &Value) -> Value {
-        let session_id = params
-            .get("session_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
-        let description = params.get("description").and_then(|v| v.as_str());
-
-        match Self::open_db() {
-            Ok(db) => {
-                let message_index = db.get_latest_message_index(session_id).unwrap_or(0);
-                let cp = flowforge_core::Checkpoint {
-                    id: uuid::Uuid::new_v4().to_string(),
-                    session_id: session_id.to_string(),
-                    name: name.to_string(),
-                    message_index,
-                    description: description.map(|s| s.to_string()),
-                    git_ref: None,
-                    created_at: chrono::Utc::now(),
-                    metadata: None,
-                };
-                match db.create_checkpoint(&cp) {
-                    Ok(()) => {
-                        json!({"status": "ok", "id": cp.id, "name": name, "message_index": message_index})
-                    }
-                    Err(e) => json!({"status": "error", "message": format!("{e}")}),
-                }
-            }
-            Err(e) => {
-                json!({"status": "error", "message": format!("Failed to open database: {e}")})
-            }
-        }
-    }
-
-    fn checkpoint_list(&self, params: &Value) -> Value {
-        let session_id = params
-            .get("session_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-
-        match Self::open_db() {
-            Ok(db) => match db.list_checkpoints(session_id) {
-                Ok(cps) => {
-                    let entries: Vec<Value> = cps
-                        .iter()
-                        .map(|c| {
-                            json!({
-                                "id": c.id,
-                                "name": c.name,
-                                "message_index": c.message_index,
-                                "description": c.description,
-                                "git_ref": c.git_ref,
-                                "created_at": c.created_at.to_rfc3339(),
-                            })
-                        })
-                        .collect();
-                    json!({"status": "ok", "checkpoints": entries})
-                }
-                Err(e) => json!({"status": "error", "message": format!("{e}")}),
-            },
-            Err(e) => {
-                json!({"status": "error", "message": format!("Failed to open database: {e}")})
-            }
-        }
-    }
-
-    fn checkpoint_get(&self, params: &Value) -> Value {
-        let id = params.get("id").and_then(|v| v.as_str());
-        let session_id = params.get("session_id").and_then(|v| v.as_str());
-        let name = params.get("name").and_then(|v| v.as_str());
-
-        match Self::open_db() {
-            Ok(db) => {
-                let cp = if let Some(id) = id {
-                    db.get_checkpoint(id)
-                } else if let (Some(sid), Some(n)) = (session_id, name) {
-                    db.get_checkpoint_by_name(sid, n)
-                } else {
-                    return json!({"status": "error", "message": "Provide either id or session_id+name"});
-                };
-                match cp {
-                    Ok(Some(c)) => json!({
-                        "status": "ok",
-                        "checkpoint": {
-                            "id": c.id,
-                            "session_id": c.session_id,
-                            "name": c.name,
-                            "message_index": c.message_index,
-                            "description": c.description,
-                            "git_ref": c.git_ref,
-                            "created_at": c.created_at.to_rfc3339(),
-                        }
-                    }),
-                    Ok(None) => json!({"status": "error", "message": "Checkpoint not found"}),
-                    Err(e) => json!({"status": "error", "message": format!("{e}")}),
-                }
-            }
-            Err(e) => {
-                json!({"status": "error", "message": format!("Failed to open database: {e}")})
-            }
-        }
-    }
-
-    // --- Session fork tool implementations ---
-
-    fn session_fork(&self, params: &Value) -> Value {
-        let session_id = params
-            .get("session_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        let checkpoint_name = params.get("checkpoint_name").and_then(|v| v.as_str());
-        let at_index = params
-            .get("at_index")
-            .and_then(|v| v.as_u64())
-            .map(|n| n as u32);
-        let reason = params.get("reason").and_then(|v| v.as_str());
-
-        match Self::open_db() {
-            Ok(db) => {
-                // Determine fork point
-                let (fork_index, checkpoint_id) = if let Some(cp_name) = checkpoint_name {
-                    match db.get_checkpoint_by_name(session_id, cp_name) {
-                        Ok(Some(cp)) => (cp.message_index, Some(cp.id)),
-                        Ok(None) => {
-                            return json!({"status": "error", "message": format!("Checkpoint '{}' not found", cp_name)})
-                        }
-                        Err(e) => return json!({"status": "error", "message": format!("{e}")}),
-                    }
-                } else if let Some(idx) = at_index {
-                    (idx, None)
-                } else {
-                    let latest = db.get_latest_message_index(session_id).unwrap_or(0);
-                    (latest.saturating_sub(1), None)
-                };
-
-                let new_session_id = uuid::Uuid::new_v4().to_string();
-                let now = chrono::Utc::now();
-
-                // Create new session
-                let new_session = flowforge_core::SessionInfo {
-                    id: new_session_id.clone(),
-                    started_at: now,
-                    ended_at: None,
-                    cwd: ".".to_string(),
-                    edits: 0,
-                    commands: 0,
-                    summary: Some(format!("Forked from {}", session_id)),
-                    transcript_path: None,
-                };
-                if let Err(e) = db.create_session(&new_session) {
-                    return json!({"status": "error", "message": format!("{e}")});
-                }
-
-                // Copy conversation
-                let copied = match db.fork_conversation(session_id, &new_session_id, fork_index) {
-                    Ok(c) => c,
-                    Err(e) => return json!({"status": "error", "message": format!("{e}")}),
-                };
-
-                // Record fork
-                let fork = flowforge_core::SessionFork {
-                    id: uuid::Uuid::new_v4().to_string(),
-                    source_session_id: session_id.to_string(),
-                    target_session_id: new_session_id.clone(),
-                    fork_message_index: fork_index,
-                    checkpoint_id,
-                    reason: reason.map(|s| s.to_string()),
-                    created_at: now,
-                };
-                if let Err(e) = db.create_session_fork(&fork) {
-                    return json!({"status": "error", "message": format!("{e}")});
-                }
-
-                json!({
-                    "status": "ok",
-                    "fork_id": fork.id,
-                    "new_session_id": new_session_id,
-                    "fork_message_index": fork_index,
-                    "messages_copied": copied,
+    fn work_log(p: &Value) -> Value {
+        let work_item_id = p.opt_str("work_item_id");
+        let limit = p.u64_or("limit", 20) as usize;
+        Self::with_db(|db, _| {
+            let events = if let Some(id) = work_item_id {
+                db.get_work_events(id, limit)?
+            } else {
+                db.get_recent_work_events(limit)?
+            };
+            let entries: Vec<Value> = events
+                .iter()
+                .map(|e| {
+                    json!({
+                        "work_item_id": e.work_item_id,
+                        "event_type": e.event_type,
+                        "old_value": e.old_value,
+                        "new_value": e.new_value,
+                        "actor": e.actor,
+                        "timestamp": e.timestamp.to_rfc3339(),
+                    })
                 })
-            }
-            Err(e) => {
-                json!({"status": "error", "message": format!("Failed to open database: {e}")})
-            }
-        }
+                .collect();
+            Ok(json!({"status": "ok", "events": entries}))
+        })
     }
 
-    fn session_forks(&self, params: &Value) -> Value {
-        let session_id = params
-            .get("session_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+    // ── Conversation tools ────────────────────────────────────────
 
-        match Self::open_db() {
-            Ok(db) => match db.get_session_forks(session_id) {
-                Ok(forks) => {
-                    let entries: Vec<Value> = forks
-                        .iter()
-                        .map(|f| {
-                            json!({
-                                "id": f.id,
-                                "source_session_id": f.source_session_id,
-                                "target_session_id": f.target_session_id,
-                                "fork_message_index": f.fork_message_index,
-                                "checkpoint_id": f.checkpoint_id,
-                                "reason": f.reason,
-                                "created_at": f.created_at.to_rfc3339(),
-                            })
-                        })
-                        .collect();
-                    json!({"status": "ok", "forks": entries})
-                }
-                Err(e) => json!({"status": "error", "message": format!("{e}")}),
-            },
-            Err(e) => {
-                json!({"status": "error", "message": format!("Failed to open database: {e}")})
-            }
-        }
-    }
-
-    fn session_lineage(&self, params: &Value) -> Value {
-        let session_id = params
-            .get("session_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-
-        match Self::open_db() {
-            Ok(db) => match db.get_session_lineage(session_id) {
-                Ok(lineage) => {
-                    let entries: Vec<Value> = lineage
-                        .iter()
-                        .map(|f| {
-                            json!({
-                                "source_session_id": f.source_session_id,
-                                "target_session_id": f.target_session_id,
-                                "fork_message_index": f.fork_message_index,
-                                "created_at": f.created_at.to_rfc3339(),
-                            })
-                        })
-                        .collect();
-                    json!({"status": "ok", "lineage": entries, "depth": entries.len()})
-                }
-                Err(e) => json!({"status": "error", "message": format!("{e}")}),
-            },
-            Err(e) => {
-                json!({"status": "error", "message": format!("Failed to open database: {e}")})
-            }
-        }
-    }
-
-    // --- Mailbox tool implementations ---
-
-    fn mailbox_send(&self, params: &Value) -> Value {
-        let work_item_id = params
-            .get("work_item_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        let from_session_id = params
-            .get("from_session_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        let from_agent_name = params
-            .get("from_agent_name")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        let to_session_id = params.get("to_session_id").and_then(|v| v.as_str());
-        let to_agent_name = params.get("to_agent_name").and_then(|v| v.as_str());
-        let content = params.get("content").and_then(|v| v.as_str()).unwrap_or("");
-        let message_type = params
-            .get("message_type")
-            .and_then(|v| v.as_str())
-            .unwrap_or("text");
-        let priority = params.get("priority").and_then(|v| v.as_i64()).unwrap_or(2) as i32;
-
-        match Self::open_db() {
-            Ok(db) => {
-                let msg = flowforge_core::MailboxMessage {
-                    id: 0,
-                    work_item_id: work_item_id.to_string(),
-                    from_session_id: from_session_id.to_string(),
-                    from_agent_name: from_agent_name.to_string(),
-                    to_session_id: to_session_id.map(|s| s.to_string()),
-                    to_agent_name: to_agent_name.map(|s| s.to_string()),
-                    message_type: message_type.to_string(),
-                    content: content.to_string(),
-                    priority,
-                    read_at: None,
-                    created_at: chrono::Utc::now(),
-                    metadata: None,
-                };
-                match db.send_mailbox_message(&msg) {
-                    Ok(id) => json!({"status": "ok", "message_id": id}),
-                    Err(e) => json!({"status": "error", "message": format!("{e}")}),
-                }
-            }
-            Err(e) => {
-                json!({"status": "error", "message": format!("Failed to open database: {e}")})
-            }
-        }
-    }
-
-    fn mailbox_read(&self, params: &Value) -> Value {
-        let session_id = params
-            .get("session_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-
-        match Self::open_db() {
-            Ok(db) => match db.get_unread_messages(session_id) {
-                Ok(msgs) => {
-                    let entries: Vec<Value> = msgs
-                        .iter()
-                        .map(|m| {
-                            json!({
-                                "id": m.id,
-                                "from_agent_name": m.from_agent_name,
-                                "to_agent_name": m.to_agent_name,
-                                "message_type": m.message_type,
-                                "content": m.content,
-                                "priority": m.priority,
-                                "created_at": m.created_at.to_rfc3339(),
-                            })
-                        })
-                        .collect();
-                    let count = entries.len();
-                    // Mark as read
-                    let _ = db.mark_messages_read(session_id);
-                    json!({"status": "ok", "messages": entries, "count": count})
-                }
-                Err(e) => json!({"status": "error", "message": format!("{e}")}),
-            },
-            Err(e) => {
-                json!({"status": "error", "message": format!("Failed to open database: {e}")})
-            }
-        }
-    }
-
-    fn mailbox_history(&self, params: &Value) -> Value {
-        let work_item_id = params
-            .get("work_item_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
-
-        match Self::open_db() {
-            Ok(db) => match db.get_mailbox_history(work_item_id, limit) {
-                Ok(msgs) => {
-                    let entries: Vec<Value> = msgs
-                        .iter()
-                        .map(|m| {
-                            json!({
-                                "id": m.id,
-                                "from_agent_name": m.from_agent_name,
-                                "to_agent_name": m.to_agent_name,
-                                "message_type": m.message_type,
-                                "content": m.content,
-                                "priority": m.priority,
-                                "read_at": m.read_at.map(|t| t.to_rfc3339()),
-                                "created_at": m.created_at.to_rfc3339(),
-                            })
-                        })
-                        .collect();
-                    json!({"status": "ok", "messages": entries})
-                }
-                Err(e) => json!({"status": "error", "message": format!("{e}")}),
-            },
-            Err(e) => {
-                json!({"status": "error", "message": format!("Failed to open database: {e}")})
-            }
-        }
-    }
-
-    fn mailbox_agents(&self, params: &Value) -> Value {
-        let work_item_id = params
-            .get("work_item_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-
-        match Self::open_db() {
-            Ok(db) => match db.get_agents_on_work_item(work_item_id) {
-                Ok(agents) => {
-                    let entries: Vec<Value> = agents
-                        .iter()
-                        .map(|a| {
-                            json!({
-                                "agent_id": a.agent_id,
-                                "agent_type": a.agent_type,
-                                "status": a.status.to_string(),
-                                "started_at": a.started_at.to_rfc3339(),
-                            })
-                        })
-                        .collect();
-                    json!({"status": "ok", "agents": entries, "count": entries.len()})
-                }
-                Err(e) => json!({"status": "error", "message": format!("{e}")}),
-            },
-            Err(e) => {
-                json!({"status": "error", "message": format!("Failed to open database: {e}")})
-            }
-        }
-    }
-
-    fn work_log(&self, params: &Value) -> Value {
-        let work_item_id = params.get("work_item_id").and_then(|v| v.as_str());
-        let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
-
-        match Self::open_db() {
-            Ok(db) => {
-                let events = if let Some(id) = work_item_id {
-                    db.get_work_events(id, limit)
-                } else {
-                    db.get_recent_work_events(limit)
-                };
-
-                match events {
-                    Ok(events) => {
-                        let entries: Vec<Value> = events
-                            .iter()
-                            .map(|e| {
-                                json!({
-                                    "work_item_id": e.work_item_id,
-                                    "event_type": e.event_type,
-                                    "old_value": e.old_value,
-                                    "new_value": e.new_value,
-                                    "actor": e.actor,
-                                    "timestamp": e.timestamp.to_rfc3339(),
-                                })
-                            })
-                            .collect();
-                        json!({"status": "ok", "events": entries})
-                    }
-                    Err(e) => json!({"status": "error", "message": format!("{e}")}),
-                }
-            }
-            Err(e) => {
-                json!({"status": "error", "message": format!("Failed to open database: {e}")})
-            }
-        }
-    }
-
-    // --- Guidance tool implementations ---
-
-    fn guidance_rules(&self, _params: &Value) -> Value {
-        match Self::load_config() {
-            Ok(config) => {
-                let g = &config.guidance;
-                let mut rules = vec![];
-                if g.destructive_ops_gate {
-                    rules.push(json!({"name": "destructive_ops", "enabled": true, "description": "Block dangerous commands"}));
-                }
-                if g.file_scope_gate {
-                    rules.push(json!({"name": "file_scope", "enabled": true, "description": "Block writes to protected paths"}));
-                }
-                if g.diff_size_gate {
-                    rules.push(json!({"name": "diff_size", "enabled": true, "max_lines": g.max_diff_lines, "description": "Ask for large diffs"}));
-                }
-                if g.secrets_gate {
-                    rules.push(json!({"name": "secrets", "enabled": true, "description": "Detect API keys and secrets"}));
-                }
-                for rule in &g.custom_rules {
-                    rules.push(json!({
-                        "name": rule.id,
-                        "enabled": rule.enabled,
-                        "pattern": rule.pattern,
-                        "action": format!("{}", rule.action),
-                        "scope": format!("{}", rule.scope),
-                        "description": rule.description
-                    }));
-                }
-                json!({
-                    "status": "ok",
-                    "gates": rules,
-                    "trust_config": {
-                        "initial": g.trust_initial_score,
-                        "ask_threshold": g.trust_ask_threshold,
-                        "decay_per_hour": g.trust_decay_per_hour
-                    }
+    fn conversation_history(p: &Value) -> Value {
+        let session_id = p.str_or("session_id", "");
+        let limit = p.u64_or("limit", 20) as usize;
+        let offset = p.u64_or("offset", 0) as usize;
+        Self::with_db(|db, _| {
+            let total = db.get_conversation_message_count(session_id).unwrap_or(0);
+            let msgs = db.get_conversation_messages(session_id, limit, offset)?;
+            let entries: Vec<Value> = msgs
+                .iter()
+                .map(|m| {
+                    json!({
+                        "message_index": m.message_index,
+                        "role": m.role,
+                        "message_type": m.message_type,
+                        "content": m.content,
+                        "model": m.model,
+                        "timestamp": m.timestamp.to_rfc3339(),
+                        "source": m.source,
+                    })
                 })
-            }
-            Err(e) => json!({"status": "error", "message": format!("{e}")}),
-        }
+                .collect();
+            Ok(json!({"status": "ok", "messages": entries, "total": total}))
+        })
     }
 
-    fn guidance_trust(&self, params: &Value) -> Value {
-        let session_id = params.get("session_id").and_then(|v| v.as_str());
-        match Self::load_config().and_then(|config| {
-            let db = MemoryDb::open(&config.db_path())?;
+    fn conversation_search(p: &Value) -> Value {
+        let session_id = p.str_or("session_id", "");
+        let query = p.str_or("query", "");
+        let limit = p.u64_or("limit", 10) as usize;
+        Self::with_db(|db, _| {
+            let msgs = db.search_conversation_messages(session_id, query, limit)?;
+            let entries: Vec<Value> = msgs
+                .iter()
+                .map(|m| {
+                    json!({
+                        "message_index": m.message_index,
+                        "role": m.role,
+                        "content": m.content,
+                        "timestamp": m.timestamp.to_rfc3339(),
+                    })
+                })
+                .collect();
+            Ok(json!({"status": "ok", "results": entries, "count": entries.len()}))
+        })
+    }
+
+    fn conversation_ingest(p: &Value) -> Value {
+        let session_id = p.str_or("session_id", "");
+        let path = p.str_or("transcript_path", "");
+        Self::with_db(|db, _| {
+            let count = db.ingest_transcript(session_id, path)?;
+            Ok(json!({"status": "ok", "ingested": count, "session_id": session_id}))
+        })
+    }
+
+    // ── Checkpoint tools ──────────────────────────────────────────
+
+    fn checkpoint_create(p: &Value) -> Value {
+        let session_id = p.str_or("session_id", "");
+        let name = p.str_or("name", "");
+        let description = p.opt_str("description");
+        Self::with_db(|db, _| {
+            let message_index = db.get_latest_message_index(session_id).unwrap_or(0);
+            let cp = flowforge_core::Checkpoint {
+                id: uuid::Uuid::new_v4().to_string(),
+                session_id: session_id.to_string(),
+                name: name.to_string(),
+                message_index,
+                description: description.map(|s| s.to_string()),
+                git_ref: None,
+                created_at: chrono::Utc::now(),
+                metadata: None,
+            };
+            db.create_checkpoint(&cp)?;
+            Ok(json!({"status": "ok", "id": cp.id, "name": name, "message_index": message_index}))
+        })
+    }
+
+    fn checkpoint_list(p: &Value) -> Value {
+        let session_id = p.str_or("session_id", "");
+        Self::with_db(|db, _| {
+            let cps = db.list_checkpoints(session_id)?;
+            let entries: Vec<Value> = cps
+                .iter()
+                .map(|c| {
+                    json!({
+                        "id": c.id,
+                        "name": c.name,
+                        "message_index": c.message_index,
+                        "description": c.description,
+                        "git_ref": c.git_ref,
+                        "created_at": c.created_at.to_rfc3339(),
+                    })
+                })
+                .collect();
+            Ok(json!({"status": "ok", "checkpoints": entries}))
+        })
+    }
+
+    fn checkpoint_get(p: &Value) -> Value {
+        let id = p.opt_str("id");
+        let session_id = p.opt_str("session_id");
+        let name = p.opt_str("name");
+        Self::with_db(|db, _| {
+            let cp = if let Some(id) = id {
+                db.get_checkpoint(id)?
+            } else if let (Some(sid), Some(n)) = (session_id, name) {
+                db.get_checkpoint_by_name(sid, n)?
+            } else {
+                return Ok(
+                    json!({"status": "error", "message": "Provide either id or session_id+name"}),
+                );
+            };
+            match cp {
+                Some(c) => Ok(json!({
+                    "status": "ok",
+                    "checkpoint": {
+                        "id": c.id,
+                        "session_id": c.session_id,
+                        "name": c.name,
+                        "message_index": c.message_index,
+                        "description": c.description,
+                        "git_ref": c.git_ref,
+                        "created_at": c.created_at.to_rfc3339(),
+                    }
+                })),
+                None => Ok(json!({"status": "error", "message": "Checkpoint not found"})),
+            }
+        })
+    }
+
+    // ── Session fork tools ────────────────────────────────────────
+
+    fn session_fork(p: &Value) -> Value {
+        let session_id = p.str_or("session_id", "");
+        let checkpoint_name = p.opt_str("checkpoint_name");
+        let at_index = p.opt_u32("at_index");
+        let reason = p.opt_str("reason");
+        Self::with_db(|db, _| {
+            let (fork_index, checkpoint_id) = if let Some(cp_name) = checkpoint_name {
+                match db.get_checkpoint_by_name(session_id, cp_name)? {
+                    Some(cp) => (cp.message_index, Some(cp.id)),
+                    None => {
+                        return Ok(
+                            json!({"status": "error", "message": format!("Checkpoint '{}' not found", cp_name)}),
+                        )
+                    }
+                }
+            } else if let Some(idx) = at_index {
+                (idx, None)
+            } else {
+                let latest = db.get_latest_message_index(session_id).unwrap_or(0);
+                (latest.saturating_sub(1), None)
+            };
+
+            let new_session_id = uuid::Uuid::new_v4().to_string();
+            let now = chrono::Utc::now();
+            let new_session = flowforge_core::SessionInfo {
+                id: new_session_id.clone(),
+                started_at: now,
+                ended_at: None,
+                cwd: ".".to_string(),
+                edits: 0,
+                commands: 0,
+                summary: Some(format!("Forked from {}", session_id)),
+                transcript_path: None,
+            };
+            db.create_session(&new_session)?;
+
+            let copied = db.fork_conversation(session_id, &new_session_id, fork_index)?;
+
+            let fork = flowforge_core::SessionFork {
+                id: uuid::Uuid::new_v4().to_string(),
+                source_session_id: session_id.to_string(),
+                target_session_id: new_session_id.clone(),
+                fork_message_index: fork_index,
+                checkpoint_id,
+                reason: reason.map(|s| s.to_string()),
+                created_at: now,
+            };
+            db.create_session_fork(&fork)?;
+
+            Ok(json!({
+                "status": "ok",
+                "fork_id": fork.id,
+                "new_session_id": new_session_id,
+                "fork_message_index": fork_index,
+                "messages_copied": copied,
+            }))
+        })
+    }
+
+    fn session_forks(p: &Value) -> Value {
+        let session_id = p.str_or("session_id", "");
+        Self::with_db(|db, _| {
+            let forks = db.get_session_forks(session_id)?;
+            let entries: Vec<Value> = forks
+                .iter()
+                .map(|f| {
+                    json!({
+                        "id": f.id,
+                        "source_session_id": f.source_session_id,
+                        "target_session_id": f.target_session_id,
+                        "fork_message_index": f.fork_message_index,
+                        "checkpoint_id": f.checkpoint_id,
+                        "reason": f.reason,
+                        "created_at": f.created_at.to_rfc3339(),
+                    })
+                })
+                .collect();
+            Ok(json!({"status": "ok", "forks": entries}))
+        })
+    }
+
+    fn session_lineage(p: &Value) -> Value {
+        let session_id = p.str_or("session_id", "");
+        Self::with_db(|db, _| {
+            let lineage = db.get_session_lineage(session_id)?;
+            let entries: Vec<Value> = lineage
+                .iter()
+                .map(|f| {
+                    json!({
+                        "source_session_id": f.source_session_id,
+                        "target_session_id": f.target_session_id,
+                        "fork_message_index": f.fork_message_index,
+                        "created_at": f.created_at.to_rfc3339(),
+                    })
+                })
+                .collect();
+            Ok(json!({"status": "ok", "lineage": entries, "depth": entries.len()}))
+        })
+    }
+
+    // ── Mailbox tools ─────────────────────────────────────────────
+
+    fn mailbox_send(p: &Value) -> Value {
+        let work_item_id = p.str_or("work_item_id", "");
+        let from_session_id = p.str_or("from_session_id", "");
+        let from_agent_name = p.str_or("from_agent_name", "");
+        let to_session_id = p.opt_str("to_session_id");
+        let to_agent_name = p.opt_str("to_agent_name");
+        let content = p.str_or("content", "");
+        let message_type = p.str_or("message_type", "text");
+        let priority = p.i64_or("priority", 2) as i32;
+        Self::with_db(|db, _| {
+            let msg = flowforge_core::MailboxMessage {
+                id: 0,
+                work_item_id: work_item_id.to_string(),
+                from_session_id: from_session_id.to_string(),
+                from_agent_name: from_agent_name.to_string(),
+                to_session_id: to_session_id.map(|s| s.to_string()),
+                to_agent_name: to_agent_name.map(|s| s.to_string()),
+                message_type: message_type.to_string(),
+                content: content.to_string(),
+                priority,
+                read_at: None,
+                created_at: chrono::Utc::now(),
+                metadata: None,
+            };
+            let id = db.send_mailbox_message(&msg)?;
+            Ok(json!({"status": "ok", "message_id": id}))
+        })
+    }
+
+    fn mailbox_read(p: &Value) -> Value {
+        let session_id = p.str_or("session_id", "");
+        Self::with_db(|db, _| {
+            let msgs = db.get_unread_messages(session_id)?;
+            let entries: Vec<Value> = msgs
+                .iter()
+                .map(|m| {
+                    json!({
+                        "id": m.id,
+                        "from_agent_name": m.from_agent_name,
+                        "to_agent_name": m.to_agent_name,
+                        "message_type": m.message_type,
+                        "content": m.content,
+                        "priority": m.priority,
+                        "created_at": m.created_at.to_rfc3339(),
+                    })
+                })
+                .collect();
+            let count = entries.len();
+            let _ = db.mark_messages_read(session_id);
+            Ok(json!({"status": "ok", "messages": entries, "count": count}))
+        })
+    }
+
+    fn mailbox_history(p: &Value) -> Value {
+        let work_item_id = p.str_or("work_item_id", "");
+        let limit = p.u64_or("limit", 20) as usize;
+        Self::with_db(|db, _| {
+            let msgs = db.get_mailbox_history(work_item_id, limit)?;
+            let entries: Vec<Value> = msgs
+                .iter()
+                .map(|m| {
+                    json!({
+                        "id": m.id,
+                        "from_agent_name": m.from_agent_name,
+                        "to_agent_name": m.to_agent_name,
+                        "message_type": m.message_type,
+                        "content": m.content,
+                        "priority": m.priority,
+                        "read_at": m.read_at.map(|t| t.to_rfc3339()),
+                        "created_at": m.created_at.to_rfc3339(),
+                    })
+                })
+                .collect();
+            Ok(json!({"status": "ok", "messages": entries}))
+        })
+    }
+
+    fn mailbox_agents(p: &Value) -> Value {
+        let work_item_id = p.str_or("work_item_id", "");
+        Self::with_db(|db, _| {
+            let agents = db.get_agents_on_work_item(work_item_id)?;
+            let entries: Vec<Value> = agents
+                .iter()
+                .map(|a| {
+                    json!({
+                        "agent_id": a.agent_id,
+                        "agent_type": a.agent_type,
+                        "status": a.status.to_string(),
+                        "started_at": a.started_at.to_rfc3339(),
+                    })
+                })
+                .collect();
+            Ok(json!({"status": "ok", "agents": entries, "count": entries.len()}))
+        })
+    }
+
+    // ── Guidance tools ────────────────────────────────────────────
+
+    fn guidance_rules(_p: &Value) -> Value {
+        Self::with_config(|config| {
+            let g = &config.guidance;
+            let mut rules = vec![];
+            if g.destructive_ops_gate {
+                rules.push(json!({"name": "destructive_ops", "enabled": true, "description": "Block dangerous commands"}));
+            }
+            if g.file_scope_gate {
+                rules.push(json!({"name": "file_scope", "enabled": true, "description": "Block writes to protected paths"}));
+            }
+            if g.diff_size_gate {
+                rules.push(json!({"name": "diff_size", "enabled": true, "max_lines": g.max_diff_lines, "description": "Ask for large diffs"}));
+            }
+            if g.secrets_gate {
+                rules.push(json!({"name": "secrets", "enabled": true, "description": "Detect API keys and secrets"}));
+            }
+            for rule in &g.custom_rules {
+                rules.push(json!({
+                    "name": rule.id,
+                    "enabled": rule.enabled,
+                    "pattern": rule.pattern,
+                    "action": format!("{}", rule.action),
+                    "scope": format!("{}", rule.scope),
+                    "description": rule.description
+                }));
+            }
+            Ok(json!({
+                "status": "ok",
+                "gates": rules,
+                "trust_config": {
+                    "initial": g.trust_initial_score,
+                    "ask_threshold": g.trust_ask_threshold,
+                    "decay_per_hour": g.trust_decay_per_hour
+                }
+            }))
+        })
+    }
+
+    fn guidance_trust(p: &Value) -> Value {
+        let session_id = p.opt_str("session_id");
+        Self::with_db(|db, _| {
             let sid = match session_id {
                 Some(s) => s.to_string(),
-                None => db
-                    .get_current_session()?
-                    .map(|s| s.id)
-                    .unwrap_or_else(|| "unknown".to_string()),
+                None => Self::current_session_id(db),
             };
-            Ok((db, sid))
-        }) {
-            Ok((db, sid)) => match db.get_trust_score(&sid) {
-                Ok(Some(t)) => json!({
+            match db.get_trust_score(&sid)? {
+                Some(t) => Ok(json!({
                     "status": "ok",
                     "session_id": sid,
                     "score": t.score,
@@ -2088,94 +1498,68 @@ impl ToolRegistry {
                     "denials": t.denials,
                     "asks": t.asks,
                     "allows": t.allows
-                }),
-                Ok(None) => json!({
+                })),
+                None => Ok(json!({
                     "status": "ok",
                     "session_id": sid,
                     "score": null,
                     "message": "no trust score found"
-                }),
-                Err(e) => json!({"status": "error", "message": format!("{e}")}),
-            },
-            Err(e) => json!({"status": "error", "message": format!("{e}")}),
-        }
+                })),
+            }
+        })
     }
 
-    fn guidance_audit(&self, params: &Value) -> Value {
-        let session_id = params.get("session_id").and_then(|v| v.as_str());
-        let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
-        match Self::load_config().and_then(|config| {
-            let db = MemoryDb::open(&config.db_path())?;
+    fn guidance_audit(p: &Value) -> Value {
+        let session_id = p.opt_str("session_id");
+        let limit = p.u64_or("limit", 20) as usize;
+        Self::with_db(|db, _| {
             let sid = match session_id {
                 Some(s) => s.to_string(),
-                None => db
-                    .get_current_session()?
-                    .map(|s| s.id)
-                    .unwrap_or_else(|| "unknown".to_string()),
+                None => Self::current_session_id(db),
             };
             let decisions = db.get_gate_decisions(&sid, limit)?;
-            Ok(decisions)
-        }) {
-            Ok(decisions) => {
-                let entries: Vec<Value> = decisions
-                    .iter()
-                    .map(|d| {
-                        json!({
-                            "gate_name": d.gate_name,
-                            "tool_name": d.tool_name,
-                            "action": format!("{}", d.action),
-                            "reason": d.reason,
-                            "risk_level": format!("{}", d.risk_level),
-                            "trust_before": d.trust_before,
-                            "trust_after": d.trust_after,
-                            "timestamp": d.timestamp.to_rfc3339()
-                        })
+            let entries: Vec<Value> = decisions
+                .iter()
+                .map(|d| {
+                    json!({
+                        "gate_name": d.gate_name,
+                        "tool_name": d.tool_name,
+                        "action": format!("{}", d.action),
+                        "reason": d.reason,
+                        "risk_level": format!("{}", d.risk_level),
+                        "trust_before": d.trust_before,
+                        "trust_after": d.trust_after,
+                        "timestamp": d.timestamp.to_rfc3339()
                     })
-                    .collect();
-                json!({"status": "ok", "count": entries.len(), "entries": entries})
-            }
-            Err(e) => json!({"status": "error", "message": format!("{e}")}),
-        }
+                })
+                .collect();
+            Ok(json!({"status": "ok", "count": entries.len(), "entries": entries}))
+        })
     }
 
-    // --- Work-stealing tool implementations ---
+    // ── Work-stealing tools ───────────────────────────────────────
 
-    fn work_claim(&self, params: &Value) -> Value {
-        let id = params.get("id").and_then(|v| v.as_str()).unwrap_or("");
-        match Self::load_config().and_then(|config| {
-            let db = MemoryDb::open(&config.db_path())?;
-            let session_id = db
-                .get_current_session()?
-                .map(|s| s.id)
-                .unwrap_or_else(|| "unknown".to_string());
+    fn work_claim(p: &Value) -> Value {
+        let id = p.str_or("id", "");
+        Self::with_db(|db, _| {
+            let session_id = Self::current_session_id(db);
             let claimed = db.claim_work_item(id, &session_id)?;
-            Ok(claimed)
-        }) {
-            Ok(claimed) => json!({"status": "ok", "claimed": claimed, "id": id}),
-            Err(e) => json!({"status": "error", "message": format!("{e}")}),
-        }
+            Ok(json!({"status": "ok", "claimed": claimed, "id": id}))
+        })
     }
 
-    fn work_release(&self, params: &Value) -> Value {
-        let id = params.get("id").and_then(|v| v.as_str()).unwrap_or("");
-        match Self::load_config().and_then(|config| {
-            let db = MemoryDb::open(&config.db_path())?;
+    fn work_release(p: &Value) -> Value {
+        let id = p.str_or("id", "");
+        Self::with_db(|db, _| {
             db.release_work_item(id)?;
-            Ok(())
-        }) {
-            Ok(()) => json!({"status": "ok", "id": id}),
-            Err(e) => json!({"status": "error", "message": format!("{e}")}),
-        }
+            Ok(json!({"status": "ok", "id": id}))
+        })
     }
 
-    fn work_steal(&self, params: &Value) -> Value {
-        let id = params.get("id").and_then(|v| v.as_str());
-        match Self::load_config().and_then(|config| {
-            let db = MemoryDb::open(&config.db_path())?;
-            let session_id = db
-                .get_current_session()?
-                .map(|s| s.id)
-                .unwrap_or_else(|| "unknown".to_string());
+    fn work_steal(p: &Value) -> Value {
+        let id = p.opt_str("id");
+        Self::with_db(|db, _| {
+            let session_id = Self::current_session_id(db);
             let target = match id {
                 Some(id) => id.to_string(),
                 None => {
@@ -2184,330 +1568,307 @@ impl ToolRegistry {
                 }
             };
             if target.is_empty() {
-                return Ok((false, String::new()));
+                return Ok(json!({"status": "ok", "stolen": false, "id": ""}));
             }
             let stolen = db.steal_work_item(&target, &session_id)?;
-            Ok((stolen, target))
-        }) {
-            Ok((stolen, id)) => json!({"status": "ok", "stolen": stolen, "id": id}),
-            Err(e) => json!({"status": "error", "message": format!("{e}")}),
-        }
+            Ok(json!({"status": "ok", "stolen": stolen, "id": target}))
+        })
     }
 
-    fn work_heartbeat(&self, params: &Value) -> Value {
-        let progress = params
-            .get("progress")
-            .and_then(|v| v.as_i64())
-            .map(|p| p as i32);
-        let id = params.get("id").and_then(|v| v.as_str());
-        match Self::load_config().and_then(|config| {
-            let db = MemoryDb::open(&config.db_path())?;
-            let session_id = db
-                .get_current_session()?
-                .map(|s| s.id)
-                .unwrap_or_else(|| "unknown".to_string());
+    fn work_heartbeat(p: &Value) -> Value {
+        let progress = p.opt_i64("progress").map(|v| v as i32);
+        let id = p.opt_str("id");
+        Self::with_db(|db, _| {
+            let session_id = Self::current_session_id(db);
             let updated = db.update_heartbeat(&session_id)?;
             if let (Some(id), Some(progress)) = (id, progress) {
                 db.update_progress(id, progress)?;
             }
-            Ok(updated)
-        }) {
-            Ok(updated) => json!({"status": "ok", "items_updated": updated}),
-            Err(e) => json!({"status": "error", "message": format!("{e}")}),
-        }
+            Ok(json!({"status": "ok", "items_updated": updated}))
+        })
     }
 
-    // --- Plugin tool implementations ---
+    // ── Plugin tools ──────────────────────────────────────────────
 
-    fn plugin_list(&self, _params: &Value) -> Value {
-        match Self::load_config().and_then(|config| {
+    fn plugin_list(_p: &Value) -> Value {
+        Self::with_config(|config| {
             let plugins = flowforge_core::plugin::load_all_plugins(&config.plugins)?;
-            Ok((plugins, config))
-        }) {
-            Ok((plugins, config)) => {
-                let entries: Vec<Value> = plugins
-                    .iter()
-                    .map(|p| {
-                        let disabled = config.plugins.disabled.contains(&p.manifest.plugin.name);
-                        json!({
-                            "name": p.manifest.plugin.name,
-                            "version": p.manifest.plugin.version,
-                            "description": p.manifest.plugin.description,
-                            "enabled": !disabled,
-                            "tools": p.manifest.tools.len(),
-                            "hooks": p.manifest.hooks.len(),
-                            "agents": p.manifest.agents.len(),
-                        })
+            let entries: Vec<Value> = plugins
+                .iter()
+                .map(|p| {
+                    let disabled = config.plugins.disabled.contains(&p.manifest.plugin.name);
+                    json!({
+                        "name": p.manifest.plugin.name,
+                        "version": p.manifest.plugin.version,
+                        "description": p.manifest.plugin.description,
+                        "enabled": !disabled,
+                        "tools": p.manifest.tools.len(),
+                        "hooks": p.manifest.hooks.len(),
+                        "agents": p.manifest.agents.len(),
                     })
-                    .collect();
-                json!({"status": "ok", "count": entries.len(), "plugins": entries})
-            }
-            Err(e) => json!({"status": "error", "message": format!("{e}")}),
-        }
+                })
+                .collect();
+            Ok(json!({"status": "ok", "count": entries.len(), "plugins": entries}))
+        })
     }
 
-    fn plugin_info(&self, params: &Value) -> Value {
-        let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
-        match Self::load_config().and_then(|config| {
+    fn plugin_info(p: &Value) -> Value {
+        let name = p.str_or("name", "");
+        Self::with_config(|config| {
             let plugins = flowforge_core::plugin::load_all_plugins(&config.plugins)?;
-            Ok((plugins, config))
-        }) {
-            Ok((plugins, config)) => {
-                match plugins.iter().find(|p| p.manifest.plugin.name == name) {
-                    Some(p) => {
-                        let disabled = config.plugins.disabled.contains(&p.manifest.plugin.name);
-                        let tools: Vec<Value> = p
-                            .manifest
-                            .tools
-                            .iter()
-                            .map(|t| {
-                                json!({
-                                    "name": t.name,
-                                    "description": t.description,
-                                    "timeout": t.timeout
-                                })
+            match plugins.iter().find(|p| p.manifest.plugin.name == name) {
+                Some(p) => {
+                    let disabled = config.plugins.disabled.contains(&p.manifest.plugin.name);
+                    let tools: Vec<Value> = p
+                        .manifest
+                        .tools
+                        .iter()
+                        .map(|t| {
+                            json!({
+                                "name": t.name,
+                                "description": t.description,
+                                "timeout": t.timeout
                             })
-                            .collect();
-                        let hooks: Vec<Value> = p
-                            .manifest
-                            .hooks
-                            .iter()
-                            .map(|h| {
-                                json!({
-                                    "event": h.event,
-                                    "priority": h.priority
-                                })
-                            })
-                            .collect();
-                        json!({
-                            "status": "ok",
-                            "name": name,
-                            "version": p.manifest.plugin.version,
-                            "description": p.manifest.plugin.description,
-                            "enabled": !disabled,
-                            "tools": tools,
-                            "hooks": hooks
                         })
-                    }
-                    None => {
-                        json!({"status": "error", "message": format!("plugin '{name}' not found")})
-                    }
+                        .collect();
+                    let hooks: Vec<Value> = p
+                        .manifest
+                        .hooks
+                        .iter()
+                        .map(|h| {
+                            json!({
+                                "event": h.event,
+                                "priority": h.priority
+                            })
+                        })
+                        .collect();
+                    Ok(json!({
+                        "status": "ok",
+                        "name": name,
+                        "version": p.manifest.plugin.version,
+                        "description": p.manifest.plugin.description,
+                        "enabled": !disabled,
+                        "tools": tools,
+                        "hooks": hooks
+                    }))
+                }
+                None => {
+                    Ok(json!({"status": "error", "message": format!("plugin '{name}' not found")}))
                 }
             }
-            Err(e) => json!({"status": "error", "message": format!("{e}")}),
-        }
+        })
     }
 
-    // --- Trajectory tool implementations ---
+    // ── Trajectory tools ──────────────────────────────────────────
 
-    fn trajectory_list(&self, params: &Value) -> Value {
-        let session_id = params.get("session_id").and_then(|v| v.as_str());
-        let status = params.get("status").and_then(|v| v.as_str());
-        let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
-        match Self::load_config().and_then(|config| {
-            let db = MemoryDb::open(&config.db_path())?;
-            db.list_trajectories(session_id, status, limit)
-        }) {
-            Ok(trajectories) => {
-                let entries: Vec<Value> = trajectories
-                    .iter()
-                    .map(|t| {
-                        json!({
-                            "id": t.id,
-                            "session_id": t.session_id,
-                            "status": format!("{}", t.status),
-                            "verdict": t.verdict.as_ref().map(|v| format!("{v}")),
-                            "confidence": t.confidence,
-                            "task_description": t.task_description,
-                            "started_at": t.started_at.to_rfc3339()
-                        })
+    fn trajectory_list(p: &Value) -> Value {
+        let session_id = p.opt_str("session_id");
+        let status = p.opt_str("status");
+        let limit = p.u64_or("limit", 20) as usize;
+        Self::with_db(|db, _| {
+            let trajectories = db.list_trajectories(session_id, status, limit)?;
+            let entries: Vec<Value> = trajectories
+                .iter()
+                .map(|t| {
+                    json!({
+                        "id": t.id,
+                        "session_id": t.session_id,
+                        "status": format!("{}", t.status),
+                        "verdict": t.verdict.as_ref().map(|v| format!("{v}")),
+                        "confidence": t.confidence,
+                        "task_description": t.task_description,
+                        "started_at": t.started_at.to_rfc3339()
                     })
-                    .collect();
-                json!({"status": "ok", "count": entries.len(), "trajectories": entries})
-            }
-            Err(e) => json!({"status": "error", "message": format!("{e}")}),
-        }
+                })
+                .collect();
+            Ok(json!({"status": "ok", "count": entries.len(), "trajectories": entries}))
+        })
     }
 
-    fn trajectory_get(&self, params: &Value) -> Value {
-        let id = params.get("id").and_then(|v| v.as_str()).unwrap_or("");
-        match Self::load_config().and_then(|config| {
-            let db = MemoryDb::open(&config.db_path())?;
+    fn trajectory_get(p: &Value) -> Value {
+        let id = p.str_or("id", "");
+        Self::with_db(|db, _| {
             let trajectory = db.get_trajectory(id)?;
             let steps = db.get_trajectory_steps(id)?;
             let ratio = db.trajectory_success_ratio(id)?;
-            Ok((trajectory, steps, ratio))
-        }) {
-            Ok((Some(t), steps, ratio)) => {
-                let step_entries: Vec<Value> = steps
-                    .iter()
-                    .map(|s| {
-                        json!({
-                            "step_index": s.step_index,
-                            "tool_name": s.tool_name,
-                            "outcome": format!("{}", s.outcome),
-                            "duration_ms": s.duration_ms,
-                            "timestamp": s.timestamp.to_rfc3339()
+            match trajectory {
+                Some(t) => {
+                    let step_entries: Vec<Value> = steps
+                        .iter()
+                        .map(|s| {
+                            json!({
+                                "step_index": s.step_index,
+                                "tool_name": s.tool_name,
+                                "outcome": format!("{}", s.outcome),
+                                "duration_ms": s.duration_ms,
+                                "timestamp": s.timestamp.to_rfc3339()
+                            })
                         })
-                    })
-                    .collect();
-                json!({
-                    "status": "ok",
-                    "id": t.id,
-                    "session_id": t.session_id,
-                    "status_field": format!("{}", t.status),
-                    "verdict": t.verdict.as_ref().map(|v| format!("{v}")),
-                    "confidence": t.confidence,
-                    "task_description": t.task_description,
-                    "success_ratio": ratio,
-                    "steps": step_entries
-                })
+                        .collect();
+                    Ok(json!({
+                        "status": "ok",
+                        "id": t.id,
+                        "session_id": t.session_id,
+                        "status_field": format!("{}", t.status),
+                        "verdict": t.verdict.as_ref().map(|v| format!("{v}")),
+                        "confidence": t.confidence,
+                        "task_description": t.task_description,
+                        "success_ratio": ratio,
+                        "steps": step_entries
+                    }))
+                }
+                None => Ok(json!({"status": "error", "message": "trajectory not found"})),
             }
-            Ok((None, _, _)) => {
-                json!({"status": "error", "message": "trajectory not found"})
-            }
-            Err(e) => json!({"status": "error", "message": format!("{e}")}),
-        }
+        })
     }
 
-    fn trajectory_judge(&self, params: &Value) -> Value {
-        let id = params.get("id").and_then(|v| v.as_str()).unwrap_or("");
-        match Self::load_config().and_then(|config| {
-            let db = MemoryDb::open(&config.db_path())?;
-            let judge = flowforge_memory::trajectory::TrajectoryJudge::new(&db, &config.patterns);
+    fn trajectory_judge(p: &Value) -> Value {
+        let id = p.str_or("id", "");
+        Self::with_db(|db, config| {
+            let judge = flowforge_memory::trajectory::TrajectoryJudge::new(db, &config.patterns);
             let result = judge.judge(id)?;
-            Ok(result)
-        }) {
-            Ok(result) => json!({
+            Ok(json!({
                 "status": "ok",
                 "verdict": format!("{}", result.verdict),
                 "confidence": result.confidence,
                 "reason": result.reason
-            }),
-            Err(e) => json!({"status": "error", "message": format!("{e}")}),
-        }
+            }))
+        })
     }
 
-    // --- Work close/sync/load tool implementations ---
+    // ── Work close/sync/load tools ────────────────────────────────
 
-    fn work_close(&self, params: &Value) -> Value {
-        let id = params.get("id").and_then(|v| v.as_str()).unwrap_or("");
-        match Self::load_config().and_then(|config| {
-            let db = MemoryDb::open(&config.db_path())?;
-            flowforge_core::work_tracking::close_item(&db, &config.work_tracking, id, "mcp")?;
-            Ok(())
-        }) {
-            Ok(()) => json!({"status": "ok", "id": id}),
-            Err(e) => json!({"status": "error", "message": format!("{e}")}),
-        }
+    fn work_close(p: &Value) -> Value {
+        let id = p.str_or("id", "");
+        Self::with_db(|db, config| {
+            flowforge_core::work_tracking::close_item(db, &config.work_tracking, id, "mcp")?;
+            Ok(json!({"status": "ok", "id": id}))
+        })
     }
 
-    fn work_sync(&self, _params: &Value) -> Value {
-        match Self::load_config().and_then(|config| {
-            let db = MemoryDb::open(&config.db_path())?;
+    fn work_sync(_p: &Value) -> Value {
+        Self::with_db(|db, config| {
             let pulled =
-                flowforge_core::work_tracking::sync_from_backend(&db, &config.work_tracking)?;
-            let pushed =
-                flowforge_core::work_tracking::push_to_backend(&db, &config.work_tracking)?;
+                flowforge_core::work_tracking::sync_from_backend(db, &config.work_tracking)?;
+            let pushed = flowforge_core::work_tracking::push_to_backend(db, &config.work_tracking)?;
             let backend =
                 flowforge_core::work_tracking::detect_backend(&config.work_tracking).to_string();
-            Ok((pulled, pushed, backend))
-        }) {
-            Ok((pulled, pushed, backend)) => json!({
+            Ok(json!({
                 "status": "ok",
                 "pulled": pulled,
                 "pushed": pushed,
                 "backend": backend
-            }),
-            Err(e) => json!({"status": "error", "message": format!("{e}")}),
-        }
+            }))
+        })
     }
 
-    fn work_load(&self, _params: &Value) -> Value {
-        match Self::open_db() {
-            Ok(db) => {
-                let filter = flowforge_core::WorkFilter {
-                    status: Some("in_progress".to_string()),
-                    limit: Some(1000),
-                    ..Default::default()
-                };
-                match db.list_work_items(&filter) {
-                    Ok(items) => {
-                        let mut by_agent: HashMap<String, Vec<Value>> = HashMap::new();
-                        for item in &items {
-                            let agent = item
-                                .assignee
-                                .clone()
-                                .or_else(|| item.claimed_by.clone())
-                                .unwrap_or_else(|| "unassigned".to_string());
-                            by_agent.entry(agent).or_default().push(json!({
-                                "id": item.id,
-                                "title": item.title,
-                                "type": item.item_type,
-                                "priority": item.priority,
-                                "progress": item.progress,
-                            }));
-                        }
-                        let agents: Vec<Value> = by_agent
-                            .into_iter()
-                            .map(|(name, items)| json!({"name": name, "items": items}))
-                            .collect();
-                        let total = items.len();
-                        json!({"status": "ok", "agents": agents, "total": total})
-                    }
-                    Err(e) => json!({"status": "error", "message": format!("{e}")}),
-                }
+    fn work_load(_p: &Value) -> Value {
+        Self::with_db(|db, _| {
+            let filter = flowforge_core::WorkFilter {
+                status: Some("in_progress".to_string()),
+                limit: Some(1000),
+                ..Default::default()
+            };
+            let items = db.list_work_items(&filter)?;
+            let mut by_agent: HashMap<String, Vec<Value>> = HashMap::new();
+            for item in &items {
+                let agent = item
+                    .assignee
+                    .clone()
+                    .or_else(|| item.claimed_by.clone())
+                    .unwrap_or_else(|| "unassigned".to_string());
+                by_agent.entry(agent).or_default().push(json!({
+                    "id": item.id,
+                    "title": item.title,
+                    "type": item.item_type,
+                    "priority": item.priority,
+                    "progress": item.progress,
+                }));
             }
-            Err(e) => {
-                json!({"status": "error", "message": format!("Failed to open database: {e}")})
-            }
-        }
+            let agents: Vec<Value> = by_agent
+                .into_iter()
+                .map(|(name, items)| json!({"name": name, "items": items}))
+                .collect();
+            let total = items.len();
+            Ok(json!({"status": "ok", "agents": agents, "total": total}))
+        })
     }
 
-    // --- Guidance verify tool implementation ---
+    // ── Guidance verify ───────────────────────────────────────────
 
-    fn guidance_verify(&self, params: &Value) -> Value {
-        let session_id = params.get("session_id").and_then(|v| v.as_str());
-        match Self::load_config().and_then(|config| {
-            let db = MemoryDb::open(&config.db_path())?;
+    fn guidance_verify(p: &Value) -> Value {
+        let session_id = p.opt_str("session_id");
+        Self::with_db(|db, _| {
             let sid = match session_id {
                 Some(s) => s.to_string(),
-                None => db
-                    .get_current_session()?
-                    .map(|s| s.id)
-                    .unwrap_or_else(|| "unknown".to_string()),
+                None => Self::current_session_id(db),
             };
             let decisions = db.get_gate_decisions_asc(&sid, 10000)?;
-            Ok(decisions)
-        }) {
-            Ok(decisions) => {
-                if decisions.is_empty() {
-                    return json!({"status": "ok", "valid": 0, "invalid": 0, "total": 0, "message": "no audit entries"});
-                }
-                let mut prev_hash = String::new();
-                let mut valid = 0u32;
-                let mut invalid = 0u32;
-                for d in &decisions {
-                    let expected_input =
-                        format!("{}{}{}{}", d.session_id, d.tool_name, d.reason, prev_hash);
-                    let expected_hash = format!("{:x}", Sha256::digest(expected_input.as_bytes()));
-                    if d.hash == expected_hash && d.prev_hash == prev_hash {
-                        valid += 1;
-                    } else {
-                        invalid += 1;
-                    }
-                    prev_hash = d.hash.clone();
-                }
-                let status = if invalid == 0 { "ok" } else { "broken" };
-                json!({
-                    "status": status,
-                    "valid": valid,
-                    "invalid": invalid,
-                    "total": valid + invalid
-                })
+            if decisions.is_empty() {
+                return Ok(
+                    json!({"status": "ok", "valid": 0, "invalid": 0, "total": 0, "message": "no audit entries"}),
+                );
             }
-            Err(e) => json!({"status": "error", "message": format!("{e}")}),
-        }
+            let mut prev_hash = String::new();
+            let mut valid = 0u32;
+            let mut invalid = 0u32;
+            for d in &decisions {
+                let expected_input =
+                    format!("{}{}{}{}", d.session_id, d.tool_name, d.reason, prev_hash);
+                let expected_hash = format!("{:x}", Sha256::digest(expected_input.as_bytes()));
+                if d.hash == expected_hash && d.prev_hash == prev_hash {
+                    valid += 1;
+                } else {
+                    invalid += 1;
+                }
+                prev_hash = d.hash.clone();
+            }
+            let status = if invalid == 0 { "ok" } else { "broken" };
+            Ok(json!({
+                "status": status,
+                "valid": valid,
+                "invalid": invalid,
+                "total": valid + invalid
+            }))
+        })
+    }
+
+    fn work_stealable(p: &Value) -> Value {
+        let limit = p.u64_or("limit", 10) as usize;
+        Self::with_db(|db, _| {
+            let items = db.get_stealable_items(limit)?;
+            let list: Vec<Value> = items
+                .iter()
+                .map(|i| {
+                    json!({
+                        "id": i.id,
+                        "title": i.title,
+                        "priority": i.priority,
+                        "progress": i.progress,
+                        "claimed_by": i.claimed_by,
+                    })
+                })
+                .collect();
+            Ok(json!({"status": "ok", "items": list, "count": list.len()}))
+        })
+    }
+
+    fn work_status(_p: &Value) -> Value {
+        Self::with_db(|db, _| {
+            let pending = db.count_work_items_by_status("pending").unwrap_or(0);
+            let in_progress = db.count_work_items_by_status("in_progress").unwrap_or(0);
+            let completed = db.count_work_items_by_status("completed").unwrap_or(0);
+            let blocked = db.count_work_items_by_status("blocked").unwrap_or(0);
+            let total = pending + in_progress + completed + blocked;
+            Ok(json!({
+                "status": "ok",
+                "pending": pending,
+                "in_progress": in_progress,
+                "completed": completed,
+                "blocked": blocked,
+                "total": total
+            }))
+        })
     }
 }
 
@@ -2516,9 +1877,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_registry_has_53_tools() {
+    fn test_registry_has_55_tools() {
         let registry = ToolRegistry::new();
-        assert_eq!(registry.list().len(), 53);
+        assert_eq!(registry.list().len(), 55);
     }
 
     #[test]
@@ -2533,7 +1894,6 @@ mod tests {
     fn test_tool_call() {
         let registry = ToolRegistry::new();
         let result = registry.call("memory_get", &json!({ "key": "test" }));
-        // With real backend, this may return error (no DB) or ok
         assert!(result.get("status").is_some());
     }
 
@@ -2563,6 +1923,8 @@ mod tests {
         assert!(registry.get("work_sync").is_some());
         assert!(registry.get("work_load").is_some());
         assert!(registry.get("guidance_verify").is_some());
+        assert!(registry.get("work_stealable").is_some());
+        assert!(registry.get("work_status").is_some());
     }
 
     #[test]
@@ -2614,5 +1976,222 @@ mod tests {
         let registry = ToolRegistry::new();
         let result = registry.call("guidance_verify", &json!({}));
         assert!(result.get("status").is_some());
+    }
+
+    #[test]
+    fn test_work_stealable_call_returns_status() {
+        let registry = ToolRegistry::new();
+        let result = registry.call("work_stealable", &json!({}));
+        assert!(result.get("status").is_some());
+    }
+
+    #[test]
+    fn test_work_status_call_returns_status() {
+        let registry = ToolRegistry::new();
+        let result = registry.call("work_status", &json!({}));
+        assert!(result.get("status").is_some());
+    }
+
+    #[test]
+    fn test_work_stealable_no_required_params() {
+        let registry = ToolRegistry::new();
+        let schema = &registry.get("work_stealable").unwrap().input_schema;
+        assert!(schema.get("required").is_none());
+    }
+
+    #[test]
+    fn test_work_status_no_required_params() {
+        let registry = ToolRegistry::new();
+        let schema = &registry.get("work_status").unwrap().input_schema;
+        assert!(schema.get("required").is_none());
+    }
+
+    // ── ToolBuilder tests ──
+
+    #[test]
+    fn test_tool_builder_required_str() {
+        let mut tools = HashMap::new();
+        tools
+            .tool("test_tool", "A test tool")
+            .required_str("name", "The name")
+            .build();
+        let tool = tools.get("test_tool").unwrap();
+        assert_eq!(tool.name, "test_tool");
+        assert_eq!(tool.description, "A test tool");
+        assert_eq!(tool.input_schema["type"], "object");
+        let required = tool.input_schema["required"].as_array().unwrap();
+        assert!(required.iter().any(|v| v.as_str() == Some("name")));
+        assert_eq!(tool.input_schema["properties"]["name"]["type"], "string");
+    }
+
+    #[test]
+    fn test_tool_builder_optional_fields() {
+        let mut tools = HashMap::new();
+        tools
+            .tool("opt_tool", "Optional fields")
+            .optional_str("filter", "Filter query")
+            .optional_int("limit", "Max results")
+            .optional_num("threshold", "Min threshold")
+            .build();
+        let tool = tools.get("opt_tool").unwrap();
+        // No required array since all fields are optional
+        assert!(tool.input_schema.get("required").is_none());
+        assert_eq!(tool.input_schema["properties"]["filter"]["type"], "string");
+        assert_eq!(tool.input_schema["properties"]["limit"]["type"], "integer");
+        assert_eq!(
+            tool.input_schema["properties"]["threshold"]["type"],
+            "number"
+        );
+    }
+
+    #[test]
+    fn test_tool_builder_defaults() {
+        let mut tools = HashMap::new();
+        tools
+            .tool("def_tool", "Defaults")
+            .optional_int_default("limit", "Max results", 50)
+            .optional_str_default("format", "Output format", "json")
+            .optional_num_default("threshold", "Min threshold", 0.5)
+            .build();
+        let tool = tools.get("def_tool").unwrap();
+        assert_eq!(tool.input_schema["properties"]["limit"]["default"], 50);
+        assert_eq!(tool.input_schema["properties"]["format"]["default"], "json");
+        assert_eq!(tool.input_schema["properties"]["threshold"]["default"], 0.5);
+    }
+
+    #[test]
+    fn test_tool_builder_mixed_required_optional() {
+        let mut tools = HashMap::new();
+        tools
+            .tool("mixed", "Mixed params")
+            .required_str("id", "Item ID")
+            .optional_str("description", "Optional desc")
+            .required_bool("confirm", "Must confirm")
+            .build();
+        let tool = tools.get("mixed").unwrap();
+        let required = tool.input_schema["required"].as_array().unwrap();
+        assert_eq!(required.len(), 2);
+        assert!(required.iter().any(|v| v.as_str() == Some("id")));
+        assert!(required.iter().any(|v| v.as_str() == Some("confirm")));
+        assert!(!required.iter().any(|v| v.as_str() == Some("description")));
+    }
+
+    // ── ParamExt tests ──
+
+    #[test]
+    fn test_param_ext_str_or() {
+        let params = json!({"name": "test", "empty": ""});
+        assert_eq!(params.str_or("name", "default"), "test");
+        assert_eq!(params.str_or("missing", "default"), "default");
+        assert_eq!(params.str_or("empty", "default"), "");
+    }
+
+    #[test]
+    fn test_param_ext_opt_str() {
+        let params = json!({"name": "test"});
+        assert_eq!(params.opt_str("name"), Some("test"));
+        assert_eq!(params.opt_str("missing"), None);
+    }
+
+    #[test]
+    fn test_param_ext_u64_or() {
+        let params = json!({"count": 42});
+        assert_eq!(params.u64_or("count", 0), 42);
+        assert_eq!(params.u64_or("missing", 10), 10);
+    }
+
+    #[test]
+    fn test_param_ext_i64_or() {
+        let params = json!({"offset": -5});
+        assert_eq!(params.i64_or("offset", 0), -5);
+        assert_eq!(params.i64_or("missing", 100), 100);
+    }
+
+    #[test]
+    fn test_param_ext_bool_or() {
+        let params = json!({"flag": true});
+        assert!(params.bool_or("flag", false));
+        assert!(!params.bool_or("missing", false));
+    }
+
+    #[test]
+    fn test_param_ext_opt_i64() {
+        let params = json!({"val": 99});
+        assert_eq!(params.opt_i64("val"), Some(99));
+        assert_eq!(params.opt_i64("missing"), None);
+    }
+
+    #[test]
+    fn test_param_ext_opt_u32() {
+        let params = json!({"val": 42});
+        assert_eq!(params.opt_u32("val"), Some(42));
+        assert_eq!(params.opt_u32("missing"), None);
+    }
+
+    // ── Tool registration completeness ──
+
+    #[test]
+    fn test_all_work_tools_registered() {
+        let registry = ToolRegistry::new();
+        let work_tools = [
+            "work_create",
+            "work_list",
+            "work_update",
+            "work_log",
+            "work_claim",
+            "work_release",
+            "work_steal",
+            "work_heartbeat",
+            "work_close",
+            "work_sync",
+            "work_load",
+            "work_stealable",
+            "work_status",
+        ];
+        for name in &work_tools {
+            assert!(registry.get(name).is_some(), "Missing work tool: {name}");
+        }
+    }
+
+    #[test]
+    fn test_all_guidance_tools_registered() {
+        let registry = ToolRegistry::new();
+        for name in [
+            "guidance_rules",
+            "guidance_trust",
+            "guidance_audit",
+            "guidance_verify",
+        ] {
+            assert!(
+                registry.get(name).is_some(),
+                "Missing guidance tool: {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_all_trajectory_tools_registered() {
+        let registry = ToolRegistry::new();
+        for name in ["trajectory_list", "trajectory_get", "trajectory_judge"] {
+            assert!(
+                registry.get(name).is_some(),
+                "Missing trajectory tool: {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_all_memory_tools_registered() {
+        let registry = ToolRegistry::new();
+        for name in [
+            "memory_get",
+            "memory_set",
+            "memory_search",
+            "memory_delete",
+            "memory_list",
+            "memory_import",
+        ] {
+            assert!(registry.get(name).is_some(), "Missing memory tool: {name}");
+        }
     }
 }

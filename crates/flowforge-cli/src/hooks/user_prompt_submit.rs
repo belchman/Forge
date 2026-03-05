@@ -206,7 +206,7 @@ pub fn run() -> Result<()> {
                 }
             } else if config.work_tracking.require_task {
                 context_parts.push(
-                    "[FlowForge Work] No active work item. Create one with `flowforge work create` or use your task tracker.".to_string()
+                    "[FlowForge Work] No active work item. You MUST run `flowforge work create \"<description>\" --type task` before doing any work. Tool calls will be BLOCKED until a work item is active.".to_string()
                 );
             }
         }

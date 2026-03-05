@@ -151,7 +151,7 @@ fn test_work_create_requires_title() {
         .args(["work", "create"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("--title"));
+        .stderr(predicate::str::contains("TITLE"));
 }
 
 // ── Session agents ──

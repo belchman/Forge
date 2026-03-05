@@ -147,7 +147,76 @@ pub fn run() -> Result<()> {
         let _ = db.update_heartbeat(&session_id);
     }
 
-    // 4. Existing: dangerous command check for Bash
+    // 4. Work-item enforcement gate: block mutating tools when no active work item
+    //    Toggle off with FLOWFORGE_NO_WORK_GATE=1 or config work_tracking.enforce_gate = false
+    if config.work_tracking.require_task
+        && config.work_tracking.enforce_gate
+        && std::env::var("FLOWFORGE_NO_WORK_GATE").is_err()
+    {
+        let is_safe = config
+            .guidance
+            .safe_tools
+            .iter()
+            .any(|s| s.eq_ignore_ascii_case(&input.tool_name));
+
+        if !is_safe {
+            // Allow flowforge/cargo bash commands through (work management + builds)
+            let is_allowed_cmd = input.tool_name == "Bash"
+                && input
+                    .tool_input
+                    .get("command")
+                    .and_then(|v| v.as_str())
+                    .map(|cmd| {
+                        cmd.contains("flowforge work")
+                            || cmd.contains("flowforge init")
+                            || cmd.starts_with("cargo ")
+                            || cmd.starts_with("git ")
+                            || cmd.starts_with("ls")
+                            || cmd.starts_with("cat ")
+                            || cmd.starts_with("echo ")
+                    })
+                    .unwrap_or(false);
+
+            // Allow MCP work tools
+            let is_work_mcp = input.tool_name.contains("work_create")
+                || input.tool_name.contains("work_update")
+                || input.tool_name.contains("work_close");
+
+            // Allow coordination tools (team comms, planning, questions)
+            let is_coordination = matches!(
+                input.tool_name.as_str(),
+                "SendMessage"
+                    | "Skill"
+                    | "AskUserQuestion"
+                    | "EnterPlanMode"
+                    | "ExitPlanMode"
+                    | "Task"
+                    | "TeamCreate"
+                    | "TeamDelete"
+            );
+
+            if !is_allowed_cmd && !is_work_mcp && !is_coordination {
+                let filter = flowforge_core::WorkFilter {
+                    status: Some("in_progress".to_string()),
+                    ..Default::default()
+                };
+                let has_active = db
+                    .list_work_items(&filter)
+                    .map(|items| !items.is_empty())
+                    .unwrap_or(false);
+
+                if !has_active {
+                    let output = PreToolUseOutput::deny(
+                        "[FlowForge] BLOCKED: No active kanbus work item. Run `flowforge work create \"<description>\" --type task` first.".to_string(),
+                    );
+                    hook::write_stdout(&output)?;
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+    // 5. Existing: dangerous command check for Bash
     if input.tool_name == "Bash" {
         if let Some(command) = input.tool_input.get("command").and_then(|v| v.as_str()) {
             if let Some(reason) = hook::check_dangerous_command(command) {
@@ -160,7 +229,7 @@ pub fn run() -> Result<()> {
         }
     }
 
-    // 5. Existing: increment command count
+    // 6. Existing: increment command count
     let _ = db.increment_session_commands(&session_id);
 
     Ok(())

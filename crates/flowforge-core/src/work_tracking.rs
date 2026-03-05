@@ -9,6 +9,36 @@ use crate::config::WorkTrackingConfig;
 use crate::types::{WorkEvent, WorkFilter, WorkItem};
 use crate::Result;
 
+/// Run a closure with stderr suppressed (redirected to /dev/null).
+/// Kanbus's `publish_notification` uses `eprintln!` for non-critical warnings
+/// when the console server isn't running. This suppresses those warnings.
+#[cfg(unix)]
+fn with_stderr_suppressed<T, F: FnOnce() -> T>(f: F) -> T {
+    use std::os::unix::io::AsRawFd;
+    let devnull = std::fs::OpenOptions::new()
+        .write(true)
+        .open("/dev/null")
+        .ok();
+    let saved_fd = devnull.as_ref().map(|dn| unsafe {
+        let saved = libc::dup(2);
+        libc::dup2(dn.as_raw_fd(), 2);
+        saved
+    });
+    let result = f();
+    if let Some(fd) = saved_fd {
+        unsafe {
+            libc::dup2(fd, 2);
+            libc::close(fd);
+        }
+    }
+    result
+}
+
+#[cfg(not(unix))]
+fn with_stderr_suppressed<T, F: FnOnce() -> T>(f: F) -> T {
+    f()
+}
+
 // ── WorkBackend trait ──
 
 /// Internal trait for external work-tracking backends (kanbus, beads).
@@ -54,7 +84,7 @@ impl WorkBackend for KanbusBackend {
             validate: false,
         };
 
-        match kanbus::issue_creation::create_issue(&request) {
+        match with_stderr_suppressed(|| kanbus::issue_creation::create_issue(&request)) {
             Ok(result) => Ok(Some(result.issue.identifier)),
             Err(e) => {
                 warn!("kanbus create failed: {e}");
@@ -65,7 +95,9 @@ impl WorkBackend for KanbusBackend {
 
     fn update_status(&self, external_id: &str, status: &str) -> Result<()> {
         if status == "completed" {
-            if let Err(e) = kanbus::issue_close::close_issue(&self.root, external_id) {
+            if let Err(e) =
+                with_stderr_suppressed(|| kanbus::issue_close::close_issue(&self.root, external_id))
+            {
                 warn!("kanbus close failed: {e}");
             }
             return Ok(());
@@ -78,39 +110,43 @@ impl WorkBackend for KanbusBackend {
             other => other,
         };
 
-        if let Err(e) = kanbus::issue_update::update_issue(
-            &self.root,
-            external_id,
-            None,                // title
-            None,                // description
-            Some(kanbus_status), // status
-            None,                // assignee
-            None,                // priority
-            false,               // claim
-            false,               // validate
-            &[],                 // add_labels
-            &[],                 // remove_labels
-            None,                // set_labels
-            None,                // parent
-        ) {
+        if let Err(e) = with_stderr_suppressed(|| {
+            kanbus::issue_update::update_issue(
+                &self.root,
+                external_id,
+                None,                // title
+                None,                // description
+                Some(kanbus_status), // status
+                None,                // assignee
+                None,                // priority
+                false,               // claim
+                false,               // validate
+                &[],                 // add_labels
+                &[],                 // remove_labels
+                None,                // set_labels
+                None,                // parent
+            )
+        }) {
             warn!("kanbus status update failed: {e}");
         }
         Ok(())
     }
 
     fn sync_inbound(&self, db: &dyn WorkDb, config: &WorkTrackingConfig) -> Result<u32> {
-        let issues = match kanbus::issue_listing::list_issues(
-            &self.root,
-            None,  // status (all)
-            None,  // issue_type
-            None,  // assignee
-            None,  // label
-            None,  // sort
-            None,  // search
-            &[],   // project_filter
-            false, // include_local
-            false, // local_only
-        ) {
+        let issues = match with_stderr_suppressed(|| {
+            kanbus::issue_listing::list_issues(
+                &self.root,
+                None,  // status (all)
+                None,  // issue_type
+                None,  // assignee
+                None,  // label
+                None,  // sort
+                None,  // search
+                &[],   // project_filter
+                false, // include_local
+                false, // local_only
+            )
+        }) {
             Ok(issues) => issues,
             Err(e) => {
                 warn!("kanbus list failed: {e}");
@@ -492,7 +528,7 @@ pub fn sync_from_backend(db: &dyn WorkDb, config: &WorkTrackingConfig) -> Result
 
 // ── Database trait to decouple from MemoryDb ──
 
-/// Trait for work tracking database operations.
+/// Trait for work tracking CRUD operations.
 /// Implemented by MemoryDb so we can use it from both CLI and MCP.
 pub trait WorkDb {
     fn create_work_item(&self, item: &WorkItem) -> Result<()>;
@@ -508,8 +544,10 @@ pub trait WorkDb {
     fn record_work_event(&self, event: &WorkEvent) -> Result<i64>;
     fn get_work_events(&self, work_item_id: &str, limit: usize) -> Result<Vec<WorkEvent>>;
     fn get_recent_work_events(&self, limit: usize) -> Result<Vec<WorkEvent>>;
+}
 
-    // Work-stealing methods
+/// Trait for work-stealing operations. Extends WorkDb with claim/steal lifecycle.
+pub trait WorkStealing: WorkDb {
     fn claim_work_item(&self, id: &str, session_id: &str) -> Result<bool>;
     fn release_work_item(&self, id: &str) -> Result<()>;
     fn update_heartbeat(&self, session_id: &str) -> Result<u64>;
@@ -523,22 +561,22 @@ pub trait WorkDb {
 // ── Work-stealing functions ──
 
 /// Claim a work item for a session.
-pub fn claim_item(db: &dyn WorkDb, id: &str, session_id: &str) -> Result<bool> {
+pub fn claim_item(db: &dyn WorkStealing, id: &str, session_id: &str) -> Result<bool> {
     db.claim_work_item(id, session_id)
 }
 
 /// Release a claimed work item.
-pub fn release_item(db: &dyn WorkDb, id: &str) -> Result<()> {
+pub fn release_item(db: &dyn WorkStealing, id: &str) -> Result<()> {
     db.release_work_item(id)
 }
 
 /// Steal a stealable work item for a new session.
-pub fn steal_item(db: &dyn WorkDb, id: &str, new_session_id: &str) -> Result<bool> {
+pub fn steal_item(db: &dyn WorkStealing, id: &str, new_session_id: &str) -> Result<bool> {
     db.steal_work_item(id, new_session_id)
 }
 
 /// Detect and mark stale items, auto-release abandoned ones.
-pub fn detect_stale(db: &dyn WorkDb, config: &WorkTrackingConfig) -> Result<(u64, u64)> {
+pub fn detect_stale(db: &dyn WorkStealing, config: &WorkTrackingConfig) -> Result<(u64, u64)> {
     let ws = &config.work_stealing;
     if !ws.enabled {
         return Ok((0, 0));
@@ -549,7 +587,7 @@ pub fn detect_stale(db: &dyn WorkDb, config: &WorkTrackingConfig) -> Result<(u64
 }
 
 /// List stealable work items.
-pub fn list_stealable(db: &dyn WorkDb, limit: usize) -> Result<Vec<WorkItem>> {
+pub fn list_stealable(db: &dyn WorkStealing, limit: usize) -> Result<Vec<WorkItem>> {
     db.get_stealable_items(limit)
 }
 
@@ -745,5 +783,32 @@ mod tests {
         let config = WorkTrackingConfig::default();
         let result = detect_backend(&config);
         assert!(!result.is_empty());
+    }
+
+    #[test]
+    fn test_detect_backend_beads() {
+        let config = WorkTrackingConfig {
+            backend: "beads".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(detect_backend(&config), "beads");
+    }
+
+    #[test]
+    fn test_detect_backend_flowforge() {
+        let config = WorkTrackingConfig {
+            backend: "flowforge".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(detect_backend(&config), "flowforge");
+    }
+
+    #[test]
+    fn test_detect_backend_claude_tasks() {
+        let config = WorkTrackingConfig {
+            backend: "claude_tasks".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(detect_backend(&config), "claude_tasks");
     }
 }

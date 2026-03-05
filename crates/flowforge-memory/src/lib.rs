@@ -3,6 +3,8 @@ pub mod db;
 pub mod embedding;
 pub mod hnsw;
 pub mod patterns;
+#[cfg(test)]
+pub mod test_helpers;
 pub mod trajectory;
 
 pub use db::MemoryDb;

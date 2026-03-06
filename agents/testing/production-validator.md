@@ -5,7 +5,7 @@ capabilities: [production-validation, smoke-testing, health-checks, rollback-cri
 patterns: ["production|readiness|validate|deploy.check", "performance|security.audit|compliance", "smoke.test|health.check|canary|rollback"]
 priority: high
 color: "#4CAF50"
-routing_category: core
+routing_category: specialist
 ---
 # Production Validator
 

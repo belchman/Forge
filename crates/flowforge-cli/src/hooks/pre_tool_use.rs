@@ -240,6 +240,7 @@ fn run_always_checks(
         let input_hash = format!("{:x}", sha2::Sha256::digest(input_json.as_bytes()));
         let sid = state.session_id.clone();
 
+        let deny_threshold = ctx.config.guidance.failure_deny_threshold;
         let prevention = ctx.with_db("check_failure_prevention", |db| {
             // Get the last 5 tools from the active trajectory, append current tool
             let mut recent = db.get_recent_trajectory_tools(&traj_id, 5)?;
@@ -255,13 +256,20 @@ fn run_always_checks(
 
             if let Some(pattern) = high_confidence.first() {
                 db.increment_pattern_prevented(pattern.id)?;
-                return Ok(Some(format!(
-                    "[FlowForge] Warning: Known failure pattern '{}' detected. {}",
-                    pattern.pattern_name, pattern.prevention_hint
+                // Escalate: DENY if pattern is frequent and prevention rate is low
+                let is_deny = pattern.occurrence_count > 5
+                    && pattern.prevented_count as f64 / pattern.occurrence_count as f64 > 0.7;
+                return Ok(Some((
+                    format!(
+                        "[FlowForge] Warning: Known failure pattern '{}' detected. {}",
+                        pattern.pattern_name, pattern.prevention_hint
+                    ),
+                    is_deny,
                 )));
             }
 
             // Check failure loop: same tool+input failing repeatedly in this session
+            // Escalation: 2 failures → ASK, ≥deny_threshold → DENY (hard block)
             let fail_count = db.get_tool_failure_count(&sid, &tool_name, &input_hash)?;
             if fail_count >= 2 {
                 // Try to find a known resolution
@@ -278,10 +286,17 @@ fn run_always_checks(
                             })
                     });
 
+                let is_deny = fail_count >= deny_threshold;
+
                 let msg = if let Some(resolution) = hint {
                     format!(
                         "[FlowForge] This tool+input has failed {} times this session. Known fix: {}",
                         fail_count, resolution
+                    )
+                } else if is_deny {
+                    format!(
+                        "[FlowForge] BLOCKED: This tool+input has failed {} times (threshold: {}). You MUST try a different approach.",
+                        fail_count, deny_threshold
                     )
                 } else {
                     format!(
@@ -289,14 +304,18 @@ fn run_always_checks(
                         fail_count
                     )
                 };
-                return Ok(Some(msg));
+                return Ok(Some((msg, is_deny)));
             }
 
             Ok(None)
         });
 
-        if let Some(Some(warning)) = prevention {
-            let output = PreToolUseOutput::ask(warning);
+        if let Some(Some((warning, is_deny))) = prevention {
+            let output = if is_deny {
+                PreToolUseOutput::deny(warning)
+            } else {
+                PreToolUseOutput::ask(warning)
+            };
             hook::write_stdout(&output)?;
             return Ok(());
         }

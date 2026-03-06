@@ -375,6 +375,7 @@ impl MemoryDb {
         // Additional indexes (v6): support delete_vectors_for_source and get_agents_on_work_item
         let _ = self.conn.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_hnsw_source ON hnsw_entries(source_type, source_id);
+             CREATE INDEX IF NOT EXISTS idx_hnsw_source_type ON hnsw_entries(source_type);
              CREATE INDEX IF NOT EXISTS idx_agent_sessions_task ON agent_sessions(task_id);
              CREATE INDEX IF NOT EXISTS idx_edits_session ON edits(session_id);",
         );

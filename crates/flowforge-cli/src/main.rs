@@ -312,6 +312,18 @@ enum LearnAction {
         #[arg(long, default_value = "20")]
         limit: usize,
     },
+    /// Backfill vector embeddings for existing data
+    Vectorize {
+        /// Only vectorize a specific source type (error, work_item, trajectory, conversation)
+        #[arg(long)]
+        source: Option<String>,
+        /// Max records to vectorize per source type
+        #[arg(long, default_value = "500")]
+        limit: usize,
+        /// Show what would be vectorized without doing it
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -693,6 +705,13 @@ fn main() {
             } => commands::learn::patterns(mine, min_occurrences),
             LearnAction::Dependencies { file, limit } => {
                 commands::learn::dependencies(file.as_deref(), limit)
+            }
+            LearnAction::Vectorize {
+                source,
+                limit,
+                dry_run,
+            } => {
+                commands::learn::vectorize(source.as_deref(), limit, dry_run)
             }
         },
         Commands::Agent { action } => match action {

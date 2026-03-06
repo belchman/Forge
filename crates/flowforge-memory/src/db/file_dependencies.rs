@@ -61,6 +61,28 @@ impl MemoryDb {
         Ok(count)
     }
 
+    /// Record a single file co-edit pair (for real-time injection follow-through tracking).
+    /// Normalizes order (file_a < file_b) to match the batch recording format.
+    pub fn record_file_co_edit_pair(&self, file_a: &str, file_b: &str) -> Result<()> {
+        let (a, b) = if file_a < file_b {
+            (file_a, file_b)
+        } else {
+            (file_b, file_a)
+        };
+        let now = Utc::now().to_rfc3339();
+        self.conn
+            .execute(
+                "INSERT INTO file_co_edits (file_a, file_b, co_edit_count, last_seen)
+                 VALUES (?1, ?2, 1, ?3)
+                 ON CONFLICT(file_a, file_b) DO UPDATE SET
+                     co_edit_count = co_edit_count + 1,
+                     last_seen = ?3",
+                params![a, b, now],
+            )
+            .sq()?;
+        Ok(())
+    }
+
     /// Returns files most often co-edited with the given file, sorted by co_edit_count DESC.
     pub fn get_related_files(&self, file_path: &str, limit: usize) -> Result<Vec<FileDependency>> {
         let mut stmt = self

@@ -326,41 +326,15 @@ pub fn run_session_learning(ctx: &HookContext, session: &flowforge_core::Session
                     TrajectoryVerdict::Partial => {}
                 }
 
-                // New system: record_routing_outcome with full signal breakdown
+                // Finalize routing outcomes: update "pending" → actual verdict
                 let outcome_str = match result.verdict {
                     TrajectoryVerdict::Success => "success",
                     TrajectoryVerdict::Failure => "failure",
                     TrajectoryVerdict::Partial => "partial",
                 };
 
-                // Look up stored RoutingBreakdown from context_injection metadata
-                if let Ok(injections) = db.get_injections_for_session(&sid) {
-                    if let Some(routing_inj) = injections.iter().find(|i| i.injection_type == "routing") {
-                        if let Some(ref metadata) = routing_inj.metadata {
-                            if let Ok(breakdown) = serde_json::from_str::<flowforge_core::RoutingBreakdown>(metadata) {
-                                let _ = db.record_routing_outcome(
-                                    &sid,
-                                    agent_name,
-                                    &pattern,
-                                    breakdown.pattern_score,
-                                    breakdown.capability_score,
-                                    breakdown.learned_score,
-                                    breakdown.priority_score,
-                                    breakdown.context_score,
-                                    breakdown.semantic_score,
-                                    outcome_str,
-                                );
-                            }
-                        } else {
-                            // No breakdown stored — record with zero scores
-                            let _ = db.record_routing_outcome(
-                                &sid, agent_name, &pattern,
-                                0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-                                outcome_str,
-                            );
-                        }
-                    }
-                }
+                // Update pending outcomes recorded during user_prompt_submit
+                let _ = db.finalize_routing_outcomes(&sid, outcome_str);
 
                 // Tier 5B: Store outcome-aware routing vectors
                 let config_for_embed = flowforge_core::config::PatternsConfig::default();
@@ -380,8 +354,9 @@ pub fn run_session_learning(ctx: &HookContext, session: &flowforge_core::Session
                 }
 
                 // Tier 1C: Trigger adaptive weight recomputation if enough data
+                // Lowered from 10 to 5 — active learning records outcomes per-prompt now
                 if let Ok(count) = db.count_routing_outcomes() {
-                    if count >= 10 {
+                    if count >= 5 {
                         let _ = db.compute_adaptive_weights(30);
                     }
                 }
@@ -391,6 +366,40 @@ pub fn run_session_learning(ctx: &HookContext, session: &flowforge_core::Session
         let _ = judge.consolidate();
         Ok(())
     });
+
+    // Embed trajectory summary vector
+    if ctx.config.vectors.embed_trajectories {
+        ctx.with_db("embed_trajectory", |db| {
+            // Get the trajectory we just judged
+            let trajectories = db.list_trajectories(Some(&sid), Some("judged"), 1)?;
+            if let Some(t) = trajectories.first() {
+                // Only embed if not already vectorized
+                if db.count_vectors_for_source_id("trajectory", &t.id)? == 0 {
+                    let task_desc = t.task_description.as_deref().unwrap_or("unknown task");
+                    let tools = db.trajectory_tool_sequence(&t.id)?;
+                    let unique_tools: Vec<String> = {
+                        let mut seen = std::collections::HashSet::new();
+                        tools.into_iter().filter(|t| seen.insert(t.clone())).collect()
+                    };
+                    let step_count = db.get_trajectory_steps(&t.id)?.len();
+                    let verdict = t.verdict.as_ref().map(|v| format!("{v}")).unwrap_or_else(|| "unknown".to_string());
+
+                    let content = format!(
+                        "{} | tools: {} | verdict: {} | {} steps",
+                        task_desc,
+                        unique_tools.join(", "),
+                        verdict,
+                        step_count
+                    );
+
+                    let embedder = flowforge_memory::default_embedder(&ctx.config.patterns);
+                    let vec = embedder.embed(&content);
+                    db.store_vector("trajectory", &t.id, &vec)?;
+                }
+            }
+            Ok(())
+        });
+    }
 
     // Pattern consolidation
     if ctx.config.hooks.learning {
@@ -447,6 +456,31 @@ pub fn run_session_learning(ctx: &HookContext, session: &flowforge_core::Session
 
             if (adjusted - current).abs() > 0.001 {
                 db.set_meta("tuned_min_injection_similarity", &adjusted.to_string())?;
+            }
+            Ok(())
+        });
+    }
+
+    // Embed user conversation messages
+    if ctx.config.vectors.embed_conversations {
+        let sid3 = session.id.clone();
+        ctx.with_db("embed_conversations", |db| {
+            let msgs = db.get_conversation_messages(&sid3, ctx.config.vectors.conversation_max_per_session, 0)?;
+            let min_len = ctx.config.vectors.conversation_min_length;
+            let user_msgs: Vec<_> = msgs.iter()
+                .filter(|m| m.role == "user" && m.content.len() > min_len)
+                .collect();
+
+            if !user_msgs.is_empty() {
+                let embedder = flowforge_memory::default_embedder(&ctx.config.patterns);
+                for msg in &user_msgs {
+                    let source_id = format!("{}:{}", sid3, msg.message_index);
+                    if db.count_vectors_for_source_id("conversation", &source_id)? == 0 {
+                        let content: String = format!("user: {}", msg.content.chars().take(500).collect::<String>());
+                        let vec = embedder.embed(&content);
+                        db.store_vector("conversation", &source_id, &vec)?;
+                    }
+                }
             }
             Ok(())
         });

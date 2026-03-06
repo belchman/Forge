@@ -298,6 +298,68 @@ impl MemoryDb {
             .sq()?;
         rows.collect::<std::result::Result<Vec<_>, _>>().sq()
     }
+    /// Find similar trajectories using vector search, with LIKE fallback.
+    pub fn find_similar_trajectories_semantic(
+        &self,
+        query_vec: &[f32],
+        k: usize,
+    ) -> Result<Vec<flowforge_core::trajectory::TrajectoryInsight>> {
+        use flowforge_core::trajectory::TrajectoryInsight;
+
+        let results = self.search_vectors(query_vec, &["trajectory"], k)?;
+
+        let mut output = Vec::new();
+        for result in &results {
+            if result.similarity < 0.3 {
+                continue;
+            }
+            if let Some(t) = self.get_trajectory(&result.source_id)? {
+                let step_count = self.get_trajectory_steps(&t.id)?.len() as u64;
+                let success_rate = self.trajectory_success_ratio(&t.id).unwrap_or(0.0);
+                output.push(TrajectoryInsight {
+                    task_description: t.task_description.unwrap_or_default(),
+                    agent_name: t.agent_name,
+                    verdict: t.verdict.map(|v| format!("{v}")),
+                    confidence: t.confidence.unwrap_or(0.0),
+                    total_steps: step_count,
+                    success_rate,
+                });
+            }
+        }
+        Ok(output)
+    }
+
+    /// Build a trajectory summary string for embedding.
+    pub fn build_trajectory_summary(&self, trajectory_id: &str) -> Result<Option<String>> {
+        let t = match self.get_trajectory(trajectory_id)? {
+            Some(t) => t,
+            None => return Ok(None),
+        };
+
+        let task_desc = t.task_description.as_deref().unwrap_or("unknown task");
+        let tools = self.trajectory_tool_sequence(trajectory_id)?;
+        let mut unique_tools: Vec<String> = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for tool in tools {
+            if seen.insert(tool.clone()) {
+                unique_tools.push(tool);
+            }
+        }
+        let verdict_str = t
+            .verdict
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+        let step_count = self.get_trajectory_steps(trajectory_id)?.len();
+
+        Ok(Some(format!(
+            "{} | tools: {} | verdict: {} | {} steps",
+            task_desc,
+            unique_tools.join(", "),
+            verdict_str,
+            step_count
+        )))
+    }
+
     /// Find trajectories with similar task descriptions for cross-session knowledge transfer.
     pub fn find_similar_trajectories(
         &self,

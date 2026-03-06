@@ -5,7 +5,7 @@ capabilities: [pr-create, pr-update, pr-review, pr-merge, pr-rebase, draft-pr, r
 patterns: ["pr|pull.request|merge.request", "create.pr|open.pr|merge.pr|close.pr", "review.pr|update.pr|rebase|squash"]
 priority: high
 color: "#24292E"
-routing_category: core
+routing_category: specialist
 ---
 # PR Manager Agent
 

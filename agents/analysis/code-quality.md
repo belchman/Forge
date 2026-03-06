@@ -5,7 +5,7 @@ capabilities: [quality-audit, solid-principles, dry-analysis, clean-code, refact
 patterns: ["quality|assess|improve|standard|debt", "clean.code|solid|dry|kiss", "refactor|readab|maintain|convention"]
 priority: normal
 color: "#8BC34A"
-routing_category: core
+routing_category: specialist
 ---
 # Code Quality
 

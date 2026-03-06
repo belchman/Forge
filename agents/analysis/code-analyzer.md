@@ -5,7 +5,7 @@ capabilities: [static-analysis, cyclomatic-complexity, cognitive-complexity, dea
 patterns: ["analyz|complexity|dead.code|lint|metric", "static.analysis|cyclomatic|cognitive", "code.smell|depend.cycle|ast|structur"]
 priority: normal
 color: "#607D8B"
-routing_category: core
+routing_category: specialist
 ---
 # Code Analyzer
 

@@ -472,6 +472,28 @@ impl MemoryDb {
         Ok(updated > 0)
     }
 
+    /// Generate and store a vector embedding for a work item.
+    pub fn store_work_item_vector(
+        &self,
+        id: &str,
+        title: &str,
+        description: Option<&str>,
+        embedder: &dyn crate::Embedder,
+    ) -> Result<()> {
+        let content = if let Some(desc) = description {
+            let desc_truncated: String = desc.chars().take(200).collect();
+            format!("{}. {}", title, desc_truncated)
+        } else {
+            title.to_string()
+        };
+        let vec = embedder.embed(&content);
+        // Only store if not already vectorized
+        if self.count_vectors_for_source_id("work_item", id)? == 0 {
+            self.store_vector("work_item", id, &vec)?;
+        }
+        Ok(())
+    }
+
     /// Get the last stale scan timestamp for rate-limiting.
     pub fn get_last_stale_scan(&self) -> Result<Option<String>> {
         self.get_meta("last_stale_scan")

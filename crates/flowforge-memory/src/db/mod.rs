@@ -27,7 +27,7 @@ pub mod task_decomposition;
 pub mod test_suggestions;
 pub mod tool_metrics;
 mod trajectories;
-mod vectors;
+pub mod vectors;
 mod work_events;
 mod work_items;
 

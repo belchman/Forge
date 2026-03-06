@@ -28,14 +28,25 @@ pub fn history(db: &MemoryDb, p: &Value) -> flowforge_core::Result<Value> {
 }
 
 pub fn search(db: &MemoryDb, p: &Value) -> flowforge_core::Result<Value> {
-    let session_id = p.require_str("session_id")?;
     let query = p.require_str("query")?;
     let limit = p.u64_or("limit", 10) as usize;
-    let msgs = db.search_conversation_messages(session_id, query, limit)?;
+    let semantic = p.bool_or("semantic", false);
+
+    let msgs = if semantic {
+        let config = flowforge_core::config::PatternsConfig::default();
+        let embedder = flowforge_memory::default_embedder(&config);
+        let query_vec = embedder.embed(query);
+        db.search_conversation_messages_semantic(&query_vec, limit)?
+    } else {
+        let session_id = p.require_str("session_id")?;
+        db.search_conversation_messages(session_id, query, limit)?
+    };
+
     let entries: Vec<Value> = msgs
         .iter()
         .map(|m| {
             json!({
+                "session_id": m.session_id,
                 "message_index": m.message_index,
                 "role": m.role,
                 "content": m.content,

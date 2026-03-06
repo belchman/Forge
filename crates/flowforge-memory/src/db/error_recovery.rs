@@ -461,6 +461,66 @@ impl MemoryDb {
         Ok(results.filter_map(|r| r.ok()).collect())
     }
 
+    /// Get a single error fingerprint by its ID (e.g. "ef-abc123").
+    pub fn get_error_fingerprint_by_id(
+        &self,
+        id: &str,
+    ) -> Result<Option<ErrorFingerprint>> {
+        self.conn
+            .query_row(
+                "SELECT id, fingerprint, category, tool_name, error_preview,
+                        first_seen, last_seen, occurrence_count
+                 FROM error_fingerprints WHERE id = ?1",
+                params![id],
+                |row| {
+                    Ok(ErrorFingerprint {
+                        id: row.get(0)?,
+                        fingerprint: row.get(1)?,
+                        category: row
+                            .get::<_, String>(2)?
+                            .parse()
+                            .unwrap_or(ErrorCategory::Unknown),
+                        tool_name: row.get(3)?,
+                        error_preview: row.get(4)?,
+                        first_seen: super::helpers::parse_datetime(
+                            row.get::<_, String>(5).unwrap_or_default(),
+                        ),
+                        last_seen: super::helpers::parse_datetime(
+                            row.get::<_, String>(6).unwrap_or_default(),
+                        ),
+                        occurrence_count: row.get::<_, i64>(7).unwrap_or(1) as u32,
+                    })
+                },
+            )
+            .optional()
+            .sq()
+    }
+
+    /// Find error resolutions using semantic vector similarity.
+    /// Searches the "error" vector space and returns fingerprints with their resolutions.
+    pub fn find_error_resolutions_semantic(
+        &self,
+        query_vec: &[f32],
+        k: usize,
+    ) -> Result<Vec<(ErrorFingerprint, Vec<ErrorResolution>)>> {
+        let results = self.search_vectors(query_vec, &["error"], k)?;
+
+        let mut output = Vec::new();
+        for result in &results {
+            if result.similarity < 0.3 {
+                continue;
+            }
+            // source_id is the fingerprint_id
+            if let Some(fp) = self.get_error_fingerprint_by_id(&result.source_id)? {
+                let resolutions = self.get_resolutions_for_fingerprint(&fp.id, 3)?;
+                if !resolutions.is_empty() {
+                    output.push((fp, resolutions));
+                }
+            }
+        }
+        Ok(output)
+    }
+
     /// Get error stats: total fingerprints, total resolutions, total occurrences.
     pub fn get_error_stats(&self) -> Result<(u64, u64, u64)> {
         let fp_count: i64 = self
@@ -628,6 +688,7 @@ fn uuid_short() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use flowforge_core::trajectory::{StepOutcome, Trajectory, TrajectoryStatus};
     use flowforge_core::SessionInfo;
     use std::path::Path;
 
@@ -1224,5 +1285,112 @@ mod tests {
             .resolution_summary
             .contains("Re-ran Bash successfully"));
         assert!(resolutions[0].tool_sequence.is_empty());
+    }
+
+    #[test]
+    fn test_failure_escalation_count_tracking() {
+        // Proves: get_tool_failure_count increments correctly,
+        // enabling the ASK→DENY escalation in pre_tool_use
+        let db = test_db();
+        test_session(&db, "sess-esc");
+
+        let tool = "Bash";
+        let hash = "same-input-hash";
+        let preview = Some("error: command not found");
+
+        // No failures yet
+        assert_eq!(db.get_tool_failure_count("sess-esc", tool, hash).unwrap(), 0);
+
+        // Record 1st failure → count=1 (below ASK threshold of 2)
+        db.record_tool_failure("sess-esc", tool, hash, preview).unwrap();
+        assert_eq!(db.get_tool_failure_count("sess-esc", tool, hash).unwrap(), 1);
+
+        // Record 2nd failure → count=2 (ASK threshold)
+        db.record_tool_failure("sess-esc", tool, hash, preview).unwrap();
+        assert_eq!(db.get_tool_failure_count("sess-esc", tool, hash).unwrap(), 2);
+
+        // Record 3rd failure → count=3 (default DENY threshold)
+        db.record_tool_failure("sess-esc", tool, hash, preview).unwrap();
+        assert_eq!(db.get_tool_failure_count("sess-esc", tool, hash).unwrap(), 3);
+
+        // Different input hash → separate count (isolation proof)
+        db.record_tool_failure("sess-esc", tool, "different-hash", preview).unwrap();
+        assert_eq!(db.get_tool_failure_count("sess-esc", tool, "different-hash").unwrap(), 1);
+        // Original still at 3
+        assert_eq!(db.get_tool_failure_count("sess-esc", tool, hash).unwrap(), 3);
+    }
+
+    #[test]
+    fn test_truncation_consistency_chars_not_bytes() {
+        // Proves: chars().take(200) truncation is consistent between
+        // record_error_occurrence and record_tool_failure, enabling the JOIN
+        let db = test_db();
+        test_session(&db, "sess-trunc");
+
+        // Create a string with multi-byte characters that exceeds 200 chars
+        // 'é' is 2 bytes in UTF-8 but 1 char
+        let long_error: String = "é".repeat(250); // 250 chars, 500 bytes
+
+        // Simulate what both functions do: chars().take(200)
+        let truncated: String = long_error.chars().take(200).collect();
+        assert_eq!(truncated.len(), 400); // 200 chars × 2 bytes each
+        assert_eq!(truncated.chars().count(), 200);
+
+        // Record via both paths
+        let fp_id = db.record_error_occurrence("Bash", &long_error).unwrap();
+        db.record_tool_failure("sess-trunc", "Bash", "hash-trunc", Some(&truncated)).unwrap();
+
+        // The JOIN must match — this is the core bug fix proof
+        let matching: i64 = db.conn.query_row(
+            "SELECT COUNT(*) FROM session_tool_failures stf
+             JOIN error_fingerprints ef ON ef.error_preview = stf.error_preview
+             WHERE stf.session_id = 'sess-trunc'",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(matching, 1, "JOIN must match after truncation fix");
+
+        // Verify fingerprint was stored
+        assert!(!fp_id.is_empty());
+    }
+
+    #[test]
+    fn test_auto_detect_resolutions_with_multibyte_errors() {
+        // End-to-end proof: auto_detect_resolutions works with multi-byte error text
+        let db = test_db();
+        test_session(&db, "sess-mb");
+
+        // Create trajectory with fail → success pattern
+        let traj = Trajectory {
+            id: "traj-mb".to_string(),
+            session_id: "sess-mb".to_string(),
+            task_description: Some("test multibyte".to_string()),
+            status: TrajectoryStatus::Completed,
+            started_at: Utc::now(),
+            ended_at: None,
+            verdict: None,
+            confidence: None,
+            metadata: None,
+            embedding_id: None,
+            agent_name: None,
+            work_item_id: None,
+        };
+        db.create_trajectory(&traj).unwrap();
+        db.record_trajectory_step("traj-mb", "Bash", None, StepOutcome::Failure, None).unwrap();
+        db.record_trajectory_step("traj-mb", "Bash", None, StepOutcome::Success, None).unwrap();
+
+        // Use an error with multi-byte chars
+        let error_text = "错误: 找不到文件 — this is a Chinese error message that is quite long and will need truncation";
+        let fp_id = db.record_error_occurrence("Bash", error_text).unwrap();
+
+        // Truncate the same way post_tool_use_failure.rs does
+        let preview: String = error_text.chars().take(200).collect();
+        db.record_tool_failure("sess-mb", "Bash", "hash-mb", Some(&preview)).unwrap();
+
+        let count = db.auto_detect_resolutions("sess-mb", "traj-mb").unwrap();
+        assert_eq!(count, 1, "auto_detect_resolutions must find resolution with multibyte errors");
+
+        let resolutions = db.get_resolutions_for_fingerprint(&fp_id, 5).unwrap();
+        assert_eq!(resolutions.len(), 1);
     }
 }

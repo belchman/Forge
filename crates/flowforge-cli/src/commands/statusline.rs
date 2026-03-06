@@ -83,8 +83,9 @@ pub fn run() -> Result<()> {
     // LINE 1: Header — project + git + model + context + duration
     // ══════════════════════════════════════════════════════════════
     let display_name = session_name.unwrap_or(&project_name);
+    let icon = "⚡".bright_yellow().to_string();
     let mut header_parts: Vec<String> =
-        vec![display_name.bold().bright_magenta().to_string()];
+        vec![format!("{}{}", icon, display_name.bold().bright_magenta())];
 
     // Git branch + changes
     if let Some(ref branch) = git_branch {
@@ -126,14 +127,35 @@ pub fn run() -> Result<()> {
         header_parts.push(colored.to_string());
     }
 
-    // Session duration
-    if let Some(ref db) = db {
-        if let Ok(Some(session)) = db.get_current_session() {
-            let secs = chrono::Utc::now()
-                .signed_duration_since(session.started_at)
-                .num_seconds();
-            header_parts.push(format_duration(secs).cyan().to_string());
-        }
+    // Session duration (always shown, -- when no session)
+    let current_session = db.as_ref().and_then(|d| d.get_current_session().ok().flatten());
+
+    // When the current session is brand new (0 commands), fall back to previous session
+    // for metrics like trust, hooks, errors so the statusline doesn't show all dashes.
+    let prev_session = if current_session.as_ref().map(|s| s.commands).unwrap_or(0) == 0 {
+        db.as_ref().and_then(|d| {
+            d.list_sessions(2).ok().and_then(|sessions| {
+                sessions.into_iter().find(|s| {
+                    Some(&s.id) != current_session.as_ref().map(|c| &c.id)
+                })
+            })
+        })
+    } else {
+        None
+    };
+    // The session to use for metrics: current if it has data, else previous
+    let metrics_session = if current_session.as_ref().map(|s| s.commands).unwrap_or(0) > 0 {
+        current_session.as_ref()
+    } else {
+        prev_session.as_ref().or(current_session.as_ref())
+    };
+    if let Some(ref session) = current_session {
+        let secs = chrono::Utc::now()
+            .signed_duration_since(session.started_at)
+            .num_seconds();
+        header_parts.push(format_duration(secs).cyan().to_string());
+    } else {
+        header_parts.push("--".dimmed().to_string());
     }
 
     // Session cost
@@ -153,172 +175,237 @@ pub fn run() -> Result<()> {
     lines.push(header_parts.join(&sep));
 
     // ══════════════════════════════════════════════════════════════
-    // LINE 2: Intelligence + Session metrics
+    // LINE 2: Intelligence + Session metrics (always shown)
     // ══════════════════════════════════════════════════════════════
-    if let Some(ref db) = db {
-        let long = db.count_patterns_long().unwrap_or(0);
+    {
         let mut parts: Vec<String> = Vec::new();
 
-        // Proven patterns
-        let long_str = if long > 10 {
-            format!("{}", long).bright_green().to_string()
-        } else if long > 0 {
-            format!("{}", long).yellow().to_string()
+        // Patterns: short+long
+        let short = db.as_ref().and_then(|d| d.count_patterns_short().ok()).unwrap_or(0);
+        let long = db.as_ref().and_then(|d| d.count_patterns_long().ok()).unwrap_or(0);
+        let total_patterns = short + long;
+        let pat_count = if total_patterns > 50 {
+            format!("{}", total_patterns).bright_green().to_string()
+        } else if total_patterns > 0 {
+            format!("{}", total_patterns).yellow().to_string()
         } else {
             "0".dimmed().to_string()
         };
-        parts.push(format!("{} proven", long_str));
+        let proven_tag = if long > 0 {
+            format!(" {}", format!("{}⚡", long).bright_cyan())
+        } else {
+            String::new()
+        };
+        parts.push(format!("{}{} {}", pat_count, proven_tag, "pat".dimmed()));
+
+        // Vectors + HNSW cluster coverage
+        let vec_count = db.as_ref().and_then(|d| d.count_vectors().ok()).unwrap_or(0);
+        let outliers = db.as_ref().and_then(|d| d.count_outlier_vectors().ok()).unwrap_or(0);
+        let clustered = vec_count - outliers;
+        let cluster_pct = if vec_count > 0 {
+            (clustered as f64 / vec_count as f64 * 100.0) as u32
+        } else {
+            0
+        };
+        let vec_str = if vec_count > 0 {
+            format!("{}", vec_count).bright_cyan().to_string()
+        } else {
+            "0".dimmed().to_string()
+        };
+        let hnsw_tag = if vec_count > 0 {
+            let pct_str = format!("{}%", cluster_pct);
+            let colored_pct = if cluster_pct >= 50 {
+                pct_str.green().to_string()
+            } else if cluster_pct >= 20 {
+                pct_str.yellow().to_string()
+            } else {
+                pct_str.dimmed().to_string()
+            };
+            format!(" {}{}", "\u{29bf}".dimmed(), colored_pct)
+        } else {
+            String::new()
+        };
+        parts.push(format!("{}{} {}", vec_str, hnsw_tag, "vec".dimmed()));
 
         // Trajectory success rate
-        let traj_rate = db.recent_trajectory_success_rate(20).unwrap_or(0.0);
+        let traj_rate = db.as_ref().and_then(|d| d.recent_trajectory_success_rate(20).ok()).unwrap_or(0.0);
         let traj_pct = (traj_rate * 100.0) as u32;
         let traj_str = format!("traj {}%", traj_pct);
         parts.push(color_by_ratio(traj_rate, &traj_str));
 
-        // Routing accuracy (only if enough data)
-        let (routing_hits, routing_total) = db.routing_accuracy_stats().unwrap_or((0, 0));
+        // Routing accuracy (always shown, -- when <3 data points)
+        let (routing_hits, routing_total) = db.as_ref().and_then(|d| d.routing_accuracy_stats().ok()).unwrap_or((0, 0));
         if routing_total > 2 {
             let route_rate = routing_hits as f64 / routing_total as f64;
             let route_pct = (route_rate * 100.0) as u32;
             let route_str = format!("route {}%", route_pct);
             parts.push(color_by_ratio(route_rate, &route_str));
+        } else {
+            parts.push(format!("{} {}", "route".dimmed(), "--%".dimmed()));
         }
 
-        // Session-dependent metrics
-        if let Ok(Some(session)) = db.get_current_session() {
-            let sid = &session.id;
-
-            // Separator
-            parts.push(SEP.dimmed().to_string());
-
-            // Trust score
-            if let Ok(Some(trust)) = db.get_trust_score(sid) {
-                let trust_pct = (trust.score * 100.0) as u32;
-                let trust_str = format!("trust {}%", trust_pct);
-                let mut detail = color_by_trust(trust.score, &trust_str);
-                if trust.denials > 0 {
-                    detail = format!("{} {}", detail, format!("{}deny", trust.denials).red());
-                }
-                parts.push(detail);
-            }
-
-            // Session error count
-            let errs = db.count_session_failures(sid).unwrap_or(0);
-            let err_str = format!("{} errs", errs);
-            if errs == 0 {
-                parts.push(err_str.green().to_string());
-            } else {
-                parts.push(err_str.red().to_string());
-            }
-
-            // Checkpoint count
-            let cps = db.list_checkpoints(sid).map(|c| c.len()).unwrap_or(0);
-            parts.push(format!("{} cp", cps).dimmed().to_string());
-
-            // Hook health: called_ok / total_configured
-            let hook_health = compute_hook_health(db, sid);
-            if hook_health.total > 0 {
-                let h_str = format!("{}/{} hooks", hook_health.ok, hook_health.total);
-                if hook_health.ok == hook_health.total {
-                    parts.push(h_str.green().to_string());
-                } else if hook_health.ok as f64 / hook_health.total as f64 >= 0.8 {
-                    parts.push(h_str.yellow().to_string());
+        // Trust score (always shown, falls back to previous session)
+        if let Some(ref session) = metrics_session {
+            if let Some(ref d) = db {
+                if let Ok(Some(trust)) = d.get_trust_score(&session.id) {
+                    let trust_pct = (trust.score * 100.0) as u32;
+                    let trust_str = format!("trust {}%", trust_pct);
+                    let mut detail = color_by_trust(trust.score, &trust_str);
+                    if trust.denials > 0 {
+                        detail = format!("{} {}", detail, format!("{}deny", trust.denials).red());
+                    }
+                    parts.push(detail);
                 } else {
-                    parts.push(h_str.red().to_string());
+                    parts.push(format!("{} {}", "trust".dimmed(), "--%".dimmed()));
                 }
+            } else {
+                parts.push(format!("{} {}", "trust".dimmed(), "--%".dimmed()));
             }
-
-            // Session activity (with separator only when there's content)
-            let mut activity = Vec::new();
-            if session.edits > 0 {
-                activity.push(format!("{} edits", session.edits));
-            }
-            if session.commands > 0 {
-                activity.push(format!("{} cmds", session.commands));
-            }
-            if !activity.is_empty() {
-                parts.push(SEP.dimmed().to_string());
-                parts.push(activity.join(" ").dimmed().to_string());
-            }
+        } else {
+            parts.push(format!("{} {}", "trust".dimmed(), "--%".dimmed()));
         }
 
-        lines.push(parts.join("  "));
+        // Session error count (always shown, falls back to previous session)
+        let errs = match (&db, &metrics_session) {
+            (Some(d), Some(s)) => d.count_session_failures(&s.id).unwrap_or(0),
+            _ => 0,
+        };
+        let err_str = format!("{} {}", errs, "errs".dimmed());
+        if errs == 0 {
+            parts.push(err_str.green().to_string());
+        } else {
+            parts.push(err_str.red().to_string());
+        }
+
+        // Hook health (always shown, falls back to previous session)
+        let hook_health = match (&db, &metrics_session) {
+            (Some(d), Some(s)) => compute_hook_health(d, &s.id),
+            _ => HookHealth { total: count_configured_hooks(), ok: 0 },
+        };
+        let h_str = format!("{}/{} {}", hook_health.ok, hook_health.total, "hooks".dimmed());
+        if hook_health.total == 0 {
+            parts.push(h_str.dimmed().to_string());
+        } else if hook_health.ok == hook_health.total {
+            parts.push(h_str.green().to_string());
+        } else if hook_health.ok as f64 / hook_health.total as f64 >= 0.8 {
+            parts.push(h_str.yellow().to_string());
+        } else {
+            parts.push(h_str.red().to_string());
+        }
+
+        // Session activity (always shown, falls back to previous session)
+        let (edits, cmds) = metrics_session
+            .map(|s| (s.edits, s.commands))
+            .unwrap_or((0, 0));
+        let edits_str = if edits > 0 {
+            format!("{} edits", edits)
+        } else {
+            format!("{} {}", "0".dimmed(), "edits".dimmed())
+        };
+        let cmds_str = if cmds > 0 {
+            format!("{} cmds", cmds)
+        } else {
+            format!("{} {}", "0".dimmed(), "cmds".dimmed())
+        };
+        parts.push(format!("{}  {}", edits_str, cmds_str));
+
+        lines.push(parts.join(&sep));
     }
 
     // ══════════════════════════════════════════════════════════════
-    // LINE 3: Work + Agents + Warnings (only if content exists)
+    // LINE 3: Work + Agents + Warnings (always shown)
     // ══════════════════════════════════════════════════════════════
-    if let Some(ref db) = db {
+    {
         let mut line3_parts: Vec<String> = Vec::new();
 
-        // Agents: live/total_spawned (names)
-        let current_session_id = db.get_current_session().ok().flatten().map(|s| s.id);
-        let agents = get_agent_summary(db, current_session_id.as_deref());
+        // Work items (always shown: active, pending, done)
+        let (wip, pending, done) = if let Some(ref d) = db {
+            let wip = d
+                .list_work_items(&flowforge_core::WorkFilter {
+                    status: Some(flowforge_core::WorkStatus::InProgress),
+                    ..Default::default()
+                })
+                .unwrap_or_default()
+                .len();
+            let pending = d
+                .list_work_items(&flowforge_core::WorkFilter {
+                    status: Some(flowforge_core::WorkStatus::Pending),
+                    ..Default::default()
+                })
+                .unwrap_or_default()
+                .len();
+            let done = d
+                .list_work_items(&flowforge_core::WorkFilter {
+                    status: Some(flowforge_core::WorkStatus::Completed),
+                    ..Default::default()
+                })
+                .unwrap_or_default()
+                .len();
+            (wip, pending, done)
+        } else {
+            (0, 0, 0)
+        };
+
+        let active_str = if wip > 0 {
+            format!("{} {}", wip, "active".dimmed()).bright_yellow().to_string()
+        } else {
+            format!("{} {}", "0".dimmed(), "active".dimmed())
+        };
+        let pending_str = if pending > 0 {
+            format!("{} {}", pending, "pending".dimmed()).bright_blue().to_string()
+        } else {
+            format!("{} {}", "0".dimmed(), "pending".dimmed())
+        };
+        let done_str = if done > 0 {
+            format!("{} {}", done, "done".dimmed()).green().to_string()
+        } else {
+            format!("{} {}", "0".dimmed(), "done".dimmed())
+        };
+        line3_parts.push(format!("{}  {}  {}", active_str, pending_str, done_str));
+
+        // Agents (always shown)
+        let current_session_id = current_session.as_ref().map(|s| s.id.clone());
+        let agents = if let Some(ref d) = db {
+            get_agent_summary(d, current_session_id.as_deref())
+        } else {
+            AgentSummary { active: 0, idle: 0, total_spawned: 0, names: Vec::new() }
+        };
         let live = agents.active + agents.idle;
-        if agents.total_spawned > 0 {
-            let count_str = if live > 0 {
-                format!("{}/{} agents", live, agents.total_spawned)
-                    .bright_green()
-                    .to_string()
-            } else {
-                format!("0/{} agents", agents.total_spawned)
-                    .dimmed()
-                    .to_string()
-            };
+        let agent_str = if live > 0 {
+            let count = format!("{}/{} agents", live, agents.total_spawned)
+                .bright_green()
+                .to_string();
             if !agents.names.is_empty() {
-                line3_parts.push(format!("{} ({})", count_str, agents.names.join(" ")));
+                format!("{} ({})", count, agents.names.join(" "))
             } else {
-                line3_parts.push(count_str);
+                count
             }
-        }
+        } else if agents.total_spawned > 0 {
+            format!("{}/{} {}", "0".dimmed(), agents.total_spawned, "agents".dimmed())
+        } else {
+            format!("{} {}", "0/0".dimmed(), "agents".dimmed())
+        };
+        line3_parts.push(agent_str);
 
-        // Unread mail
-        if let Some(ref sid) = current_session_id {
-            if let Ok(unread) = db.get_unread_messages(sid) {
-                if !unread.is_empty() {
-                    line3_parts
-                        .push(format!("{} mail", unread.len()).bright_yellow().to_string());
-                }
-            }
-        }
+        // Unread mail (always shown)
+        let unread_count = match (&db, &current_session_id) {
+            (Some(d), Some(sid)) => d.get_unread_messages(sid).map(|u| u.len()).unwrap_or(0),
+            _ => 0,
+        };
+        let mail_str = if unread_count > 0 {
+            format!("{} {}", unread_count, "mail".dimmed()).bright_yellow().to_string()
+        } else {
+            format!("{} {}", "0".dimmed(), "mail".dimmed())
+        };
+        line3_parts.push(mail_str);
 
-        // Work items (with title of first active/pending item)
-        let wip_items = db
-            .list_work_items(&flowforge_core::WorkFilter {
-                status: Some(flowforge_core::WorkStatus::InProgress),
-                ..Default::default()
-            })
-            .unwrap_or_default();
-        let pending_items = db
-            .list_work_items(&flowforge_core::WorkFilter {
-                status: Some(flowforge_core::WorkStatus::Pending),
-                ..Default::default()
-            })
-            .unwrap_or_default();
-        let wip = wip_items.len();
-        let pending = pending_items.len();
-        if wip > 0 || pending > 0 {
-            // Show title of the most relevant work item
-            let lead_item = wip_items.first().or(pending_items.first());
-            if let Some(item) = lead_item {
-                let title = truncate_str(&item.title, 35);
-                line3_parts.push(title.bright_cyan().to_string());
-            }
-            let mut w = Vec::new();
-            if wip > 0 {
-                w.push(format!("{} active", wip));
-            }
-            if pending > 0 {
-                w.push(format!("{} pending", pending));
-            }
-            line3_parts.push(w.join(" ").bright_blue().to_string());
-        }
-
-        // Warnings
+        // Warnings / clean status
         let mut warn_parts = Vec::new();
-        if let Ok(stealable) = db.get_stealable_items(5) {
-            if !stealable.is_empty() {
-                warn_parts.push(format!("{} stale", stealable.len()).yellow().to_string());
+        if let Some(ref d) = db {
+            if let Ok(stealable) = d.get_stealable_items(5) {
+                if !stealable.is_empty() {
+                    warn_parts.push(format!("{} stale", stealable.len()).yellow().to_string());
+                }
             }
         }
         let log_path = FlowForgeConfig::project_dir().join("hook-errors.log");
@@ -330,14 +417,13 @@ pub fn run() -> Result<()> {
                 }
             }
         }
-        if !warn_parts.is_empty() {
+        if warn_parts.is_empty() {
+            line3_parts.push("\u{2713} clean".green().to_string());
+        } else {
             line3_parts.push(format!("!! {}", warn_parts.join(" ")));
         }
 
-        // Only print line 3 if there's content
-        if !line3_parts.is_empty() {
-            lines.push(line3_parts.join("  {}  ").replace("{}", &SEP.dimmed().to_string()));
-        }
+        lines.push(line3_parts.join(&sep));
     }
 
     // Print multi-line dashboard
@@ -352,44 +438,37 @@ pub fn print_legend() -> Result<()> {
     println!("{}", "FlowForge Dashboard Legend".bold().cyan());
     println!();
 
-    println!("{}", "HEADER LINE".bold());
-    println!("  project      Project or session name");
+    println!("{}", "LINE 1: IDENTITY + ENVIRONMENT".bold());
+    println!("  {}flowforge   Icon prefix + project or session name", "⚡".bright_yellow());
     println!("  branch       Git branch with +staged ~modified ?untracked");
     println!("  op4.6        Model name (Opus 4.6, Sonnet 4.6, etc.)");
     println!("  ctx 23%      Context window usage (green<50 cyan<70 yellow<85 red)");
-    println!("  5m           Session duration");
+    println!("  5m / --      Session duration (-- when no session)");
     println!("  $1.23        Session cost (green<$1 yellow<$5 red)");
     println!();
 
-    println!("{}", "INTELLIGENCE + SESSION LINE".bold());
-    println!("  N proven     Long-term validated patterns");
+    println!("{}", "LINE 2: INTELLIGENCE + SESSION METRICS".bold());
+    println!("  N [M{}] pat  Total patterns (short+long), M{}=promoted/proven", "⚡".bright_cyan(), "⚡".bright_cyan());
+    println!("  N [P%] vec   HNSW vectors, P%=cluster coverage (higher=better organized)");
     println!("  traj N%      Trajectory success rate (last 20 judged)");
-    println!("  route N%     Routing accuracy (shown when >2 data points)");
-    println!("  trust N%     Guidance trust score (green>=80 yellow>=50 red)");
-    println!("  N errs       Distinct tool failures this session (green=0 red>0)");
-    println!("  N cp         Checkpoint count (rollback safety points)");
-    println!("  N/M hooks    Hooks working / total configured (green=all yellow>=80% red)");
+    println!("  route N%     Routing accuracy (--% when <3 data points)");
+    println!("  trust N%     Guidance trust score (--% when no session)");
+    println!("  N errs       Distinct tool failures this session");
+    println!("  N/M hooks    Hooks working / total configured");
     println!("  N edits      File edits this session");
     println!("  N cmds       Commands run this session");
     println!();
 
-    println!("{}", "WORK + AGENTS LINE (shown when applicable)".bold());
-    println!("  N/M agents   Live / total spawned agents (with shortened names)");
-    println!("  N mail       Unread co-agent messages");
-    println!("  title…       Title of lead work item (truncated)");
+    println!("{}", "LINE 3: WORK + AGENTS".bold());
     println!("  N active     In-progress work items");
     println!("  N pending    Pending work items");
-    println!("  !! stale     Stealable work items (warning)");
-    println!(
-        "  !! {}    Hook error log not empty (warning)",
-        "hook-err".red()
-    );
+    println!("  N done       Completed work items");
+    println!("  N/M agents   Live / total spawned agents");
+    println!("  N mail       Unread co-agent messages");
+    println!("  {} clean     No warnings (or !! stale / hook-err)", "\u{2713}".green());
     println!();
 
-    println!(
-        "{}",
-        "Run `flowforge statusline` to see the live dashboard.".dimmed()
-    );
+    println!("{}", "All fields always visible. Dimmed = zero/unavailable.".dimmed());
 
     Ok(())
 }
@@ -570,14 +649,6 @@ fn count_configured_hooks() -> usize {
         .unwrap_or(0)
 }
 
-fn truncate_str(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        s.to_string()
-    } else {
-        format!("{}…", &s[..max - 1])
-    }
-}
-
 fn shorten_agent_name(agent_type: &str) -> String {
     match agent_type {
         "general-purpose" | "general" => "gen".to_string(),
@@ -587,7 +658,7 @@ fn shorten_agent_name(agent_type: &str) -> String {
         "claude-code-guide" => "guide".to_string(),
         "statusline-setup" => "sline".to_string(),
         "test-runner" => "test".to_string(),
-        t if t.len() > 6 => t[..6].to_string(),
+        t if t.chars().count() > 6 => t.chars().take(6).collect(),
         t => t.to_string(),
     }
 }

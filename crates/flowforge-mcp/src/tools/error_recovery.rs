@@ -1,5 +1,6 @@
 use serde_json::{json, Value};
 
+use flowforge_core::config::FlowForgeConfig;
 use flowforge_memory::MemoryDb;
 
 use crate::params::ParamExt;
@@ -28,7 +29,8 @@ pub fn list(db: &MemoryDb, p: &Value) -> flowforge_core::Result<Value> {
 }
 
 /// Find resolutions for an error (by text or fingerprint ID).
-pub fn find(db: &MemoryDb, p: &Value) -> flowforge_core::Result<Value> {
+/// Falls back to semantic vector search when no exact fingerprint match is found.
+pub fn find(db: &MemoryDb, config: &FlowForgeConfig, p: &Value) -> flowforge_core::Result<Value> {
     let limit = p.u64_or("limit", 5) as usize;
 
     // Accept either error_text or fingerprint_id
@@ -52,6 +54,7 @@ pub fn find(db: &MemoryDb, p: &Value) -> flowforge_core::Result<Value> {
                 Ok(json!({
                     "status": "ok",
                     "found": true,
+                    "match_type": "exact",
                     "fingerprint": {
                         "id": fp.id,
                         "category": fp.category.to_string(),
@@ -60,7 +63,54 @@ pub fn find(db: &MemoryDb, p: &Value) -> flowforge_core::Result<Value> {
                     "resolutions": res,
                 }))
             }
-            None => Ok(json!({"status": "ok", "found": false, "resolutions": []})),
+            None => {
+                // No exact fingerprint match — try semantic search
+                if config.vectors.embed_errors {
+                    let embedder =
+                        flowforge_memory::default_embedder(&config.patterns);
+                    let query_vec = embedder.embed(error_text);
+                    let semantic_results =
+                        db.find_error_resolutions_semantic(&query_vec, limit)?;
+
+                    if !semantic_results.is_empty() {
+                        let entries: Vec<Value> = semantic_results
+                            .iter()
+                            .map(|(fp, resolutions)| {
+                                let res: Vec<Value> = resolutions
+                                    .iter()
+                                    .map(|r| {
+                                        json!({
+                                            "id": r.id,
+                                            "summary": r.resolution_summary,
+                                            "tool_sequence": r.tool_sequence,
+                                            "files_changed": r.files_changed,
+                                            "confidence": r.confidence(),
+                                            "success_count": r.success_count,
+                                            "failure_count": r.failure_count,
+                                        })
+                                    })
+                                    .collect();
+                                json!({
+                                    "fingerprint": {
+                                        "id": fp.id,
+                                        "category": fp.category.to_string(),
+                                        "error_preview": fp.error_preview,
+                                        "occurrence_count": fp.occurrence_count,
+                                    },
+                                    "resolutions": res,
+                                })
+                            })
+                            .collect();
+                        return Ok(json!({
+                            "status": "ok",
+                            "found": true,
+                            "match_type": "semantic",
+                            "similar_errors": entries,
+                        }));
+                    }
+                }
+                Ok(json!({"status": "ok", "found": false, "resolutions": []}))
+            }
         }
     } else if let Some(fingerprint_id) = p.opt_str("fingerprint_id") {
         let resolutions = db.get_resolutions_for_fingerprint(fingerprint_id, limit)?;

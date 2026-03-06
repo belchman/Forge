@@ -37,6 +37,40 @@ pub struct FlowForgeConfig {
     /// Plugin enable/disable lists.
     #[serde(default)]
     pub plugins: PluginsConfig,
+    /// Multi-source vector embedding configuration.
+    #[serde(default)]
+    pub vectors: VectorsConfig,
+}
+
+/// Multi-source vectorization configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct VectorsConfig {
+    /// Embed conversation messages at session end. Default: true.
+    pub embed_conversations: bool,
+    /// Embed trajectory summaries at session end. Default: true.
+    pub embed_trajectories: bool,
+    /// Embed error fingerprints on occurrence. Default: true.
+    pub embed_errors: bool,
+    /// Embed work items on creation. Default: true.
+    pub embed_work_items: bool,
+    /// Maximum conversation messages to embed per session. Default: 50.
+    pub conversation_max_per_session: usize,
+    /// Minimum message length (chars) to embed. Default: 50.
+    pub conversation_min_length: usize,
+}
+
+impl Default for VectorsConfig {
+    fn default() -> Self {
+        Self {
+            embed_conversations: true,
+            embed_trajectories: true,
+            embed_errors: true,
+            embed_work_items: true,
+            conversation_max_per_session: 50,
+            conversation_min_length: 50,
+        }
+    }
 }
 
 /// General FlowForge settings.
@@ -223,8 +257,8 @@ impl Default for PatternsConfig {
             short_term_max: 500,
             short_term_ttl_hours: 24,
             long_term_max: 2000,
-            promotion_min_usage: 3,
-            promotion_min_confidence: 0.6,
+            promotion_min_usage: 1,
+            promotion_min_confidence: 0.5,
             decay_rate_per_hour: 0.005,
             dedup_similarity_threshold: 0.88,
             trajectory_max: 5000,
@@ -283,6 +317,9 @@ pub struct HooksConfig {
     /// If true, inject the full agent markdown body into context instead of a
     /// compact 1-line summary (~460 tokens saved when false). Default: false.
     pub inject_agent_body: bool,
+    /// Maximum total characters for all context injections on each UserPromptSubmit.
+    /// Roughly 4 chars per token, so 3000 chars ≈ 750 tokens. Default: 3000.
+    pub context_budget_chars: usize,
 }
 
 impl Default for HooksConfig {
@@ -293,6 +330,7 @@ impl Default for HooksConfig {
             routing: true,
             learning: true,
             inject_agent_body: false,
+            context_budget_chars: 3000,
         }
     }
 }
@@ -443,6 +481,8 @@ pub struct GuidanceConfig {
     pub protected_paths: Vec<String>,
     /// User-defined custom guidance rules. Default: [].
     pub custom_rules: Vec<crate::types::GuidanceRule>,
+    /// Number of repeated failures before DENY (hard block) instead of ASK. Default: 3.
+    pub failure_deny_threshold: u32,
     /// Tools that bypass guidance gates entirely (read-only, safe tools).
     /// Default includes: Read, Glob, Grep, LSP, WebSearch, WebFetch, TaskList,
     /// TaskGet, TaskCreate, TaskUpdate, ToolSearch.
@@ -464,6 +504,7 @@ impl Default for GuidanceConfig {
             trust_decay_per_hour: 0.02,
             protected_paths: vec![],
             custom_rules: vec![],
+            failure_deny_threshold: 3,
             safe_tools: vec![
                 "Read",
                 "Glob",
@@ -932,8 +973,8 @@ log_level = "debug"
         let config = PatternsConfig::default();
         assert_eq!(config.short_term_max, 500);
         assert_eq!(config.long_term_max, 2000);
-        assert_eq!(config.promotion_min_usage, 3);
-        assert!((config.promotion_min_confidence - 0.6).abs() < f64::EPSILON);
+        assert_eq!(config.promotion_min_usage, 1);
+        assert!((config.promotion_min_confidence - 0.5).abs() < f64::EPSILON);
         assert!((config.min_injection_similarity - 0.55).abs() < f64::EPSILON);
     }
 

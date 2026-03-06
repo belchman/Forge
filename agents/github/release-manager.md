@@ -5,7 +5,7 @@ capabilities: [semver, changelog-generate, git-tag, github-release, version-bump
 patterns: ["release|version.bump|create.release|publish.release", "changelog|semver|tag|cut.release", "release.notes|release.candidate|pre.release"]
 priority: normal
 color: "#6F42C1"
-routing_category: core
+routing_category: specialist
 ---
 # Release Manager Agent
 

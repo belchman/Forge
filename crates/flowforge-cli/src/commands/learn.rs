@@ -508,6 +508,207 @@ pub fn dependencies(file: Option<&str>, limit: usize) -> Result<()> {
     Ok(())
 }
 
+pub fn vectorize(source: Option<&str>, limit: usize, dry_run: bool) -> Result<()> {
+    let config = FlowForgeConfig::load(&FlowForgeConfig::config_path())?;
+    let db = MemoryDb::open(&config.db_path())?;
+    let embedder = flowforge_memory::default_embedder(&config.patterns);
+
+    let sources: Vec<&str> = match source {
+        Some(s) => vec![s],
+        None => vec!["error", "work_item", "trajectory", "conversation"],
+    };
+
+    let mut total_vectorized = 0u64;
+
+    for src in &sources {
+        match *src {
+            "error" => {
+                let count = db.count_unvectorized_errors()?;
+                if dry_run {
+                    println!("  {} errors to vectorize: {}", "→".dimmed(), count);
+                    continue;
+                }
+                if count == 0 {
+                    continue;
+                }
+                // Get unvectorized error fingerprints
+                let fps = db.list_error_fingerprints(limit)?;
+                let mut embedded = 0u64;
+                for fp in &fps {
+                    if db.count_vectors_for_source_id("error", &fp.id)? == 0 {
+                        let tool = fp.tool_name.as_deref().unwrap_or("unknown");
+                        let content = format!(
+                            "{}: {} - {}",
+                            fp.category, tool, fp.error_preview
+                        );
+                        let vec = embedder.embed(&content);
+                        let _ = db.store_vector("error", &fp.id, &vec);
+                        embedded += 1;
+                        if embedded as usize >= limit {
+                            break;
+                        }
+                    }
+                }
+                if embedded > 0 {
+                    println!(
+                        "  {} Vectorized {} error fingerprints",
+                        "✓".green(),
+                        embedded
+                    );
+                    total_vectorized += embedded;
+                }
+            }
+            "work_item" => {
+                let count = db.count_unvectorized_work_items()?;
+                if dry_run {
+                    println!("  {} work items to vectorize: {}", "→".dimmed(), count);
+                    continue;
+                }
+                if count == 0 {
+                    continue;
+                }
+                let filter = flowforge_core::WorkFilter::default();
+                let items = db.list_work_items(&filter)?;
+                let mut embedded = 0u64;
+                for item in &items {
+                    if db.count_vectors_for_source_id("work_item", &item.id)? == 0 {
+                        let _ = db.store_work_item_vector(
+                            &item.id,
+                            &item.title,
+                            item.description.as_deref(),
+                            embedder.as_ref(),
+                        );
+                        embedded += 1;
+                        if embedded as usize >= limit {
+                            break;
+                        }
+                    }
+                }
+                if embedded > 0 {
+                    println!(
+                        "  {} Vectorized {} work items",
+                        "✓".green(),
+                        embedded
+                    );
+                    total_vectorized += embedded;
+                }
+            }
+            "trajectory" => {
+                let count = db.count_unvectorized_trajectories()?;
+                if dry_run {
+                    println!("  {} trajectories to vectorize: {}", "→".dimmed(), count);
+                    continue;
+                }
+                if count == 0 {
+                    continue;
+                }
+                let trajectories = db.list_trajectories(None, None, limit)?;
+                let mut embedded = 0u64;
+                for t in &trajectories {
+                    if !matches!(t.status.to_string().as_str(), "completed" | "judged") {
+                        continue;
+                    }
+                    if db.count_vectors_for_source_id("trajectory", &t.id)? == 0 {
+                        if let Ok(Some(summary)) = db.build_trajectory_summary(&t.id) {
+                            let vec = embedder.embed(&summary);
+                            let _ = db.store_vector("trajectory", &t.id, &vec);
+                            embedded += 1;
+                            if embedded as usize >= limit {
+                                break;
+                            }
+                        }
+                    }
+                }
+                if embedded > 0 {
+                    println!(
+                        "  {} Vectorized {} trajectories",
+                        "✓".green(),
+                        embedded
+                    );
+                    total_vectorized += embedded;
+                }
+            }
+            "conversation" => {
+                let count = db.count_unvectorized_conversations()?;
+                if dry_run {
+                    println!(
+                        "  {} conversation messages to vectorize: {}",
+                        "→".dimmed(),
+                        count
+                    );
+                    continue;
+                }
+                if count == 0 {
+                    continue;
+                }
+                // Get recent sessions and their user messages
+                let sessions = db.list_sessions(20)?;
+                let mut embedded = 0u64;
+                let min_len = config.vectors.conversation_min_length;
+                let max_per_session = config.vectors.conversation_max_per_session;
+                for session in &sessions {
+                    let msgs =
+                        db.get_conversation_messages(&session.id, max_per_session, 0)?;
+                    for msg in &msgs {
+                        if msg.role != "user" || msg.content.len() <= min_len {
+                            continue;
+                        }
+                        let source_id =
+                            format!("{}:{}", session.id, msg.message_index);
+                        if db.count_vectors_for_source_id("conversation", &source_id)?
+                            == 0
+                        {
+                            let content: String = format!(
+                                "user: {}",
+                                msg.content.chars().take(500).collect::<String>()
+                            );
+                            let vec = embedder.embed(&content);
+                            let _ = db.store_vector("conversation", &source_id, &vec);
+                            embedded += 1;
+                            if embedded as usize >= limit {
+                                break;
+                            }
+                        }
+                    }
+                    if embedded as usize >= limit {
+                        break;
+                    }
+                }
+                if embedded > 0 {
+                    println!(
+                        "  {} Vectorized {} conversation messages",
+                        "✓".green(),
+                        embedded
+                    );
+                    total_vectorized += embedded;
+                }
+            }
+            other => {
+                return Err(flowforge_core::Error::InvalidInput(format!(
+                    "Unknown source type '{}'. Use: error, work_item, trajectory, conversation",
+                    other
+                )));
+            }
+        }
+    }
+
+    if dry_run {
+        println!("{}", "\nDry run — no vectors stored.".dimmed());
+    } else if total_vectorized > 0 {
+        let total_vecs = db.count_vectors()?;
+        println!(
+            "\n{} Backfilled {} vectors (total: {})",
+            "✓".green(),
+            total_vectorized,
+            total_vecs
+        );
+    } else {
+        println!("All records already vectorized.");
+    }
+
+    Ok(())
+}
+
 pub fn judge(id: &str) -> Result<()> {
     let config = FlowForgeConfig::load(&FlowForgeConfig::config_path())?;
     let db = MemoryDb::open(&config.db_path())?;

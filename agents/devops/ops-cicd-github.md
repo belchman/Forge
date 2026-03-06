@@ -5,7 +5,7 @@ capabilities: [github-actions, ci-cd, workflow-yaml, matrix-builds, caching, sec
 patterns: ["github.action|ci.?cd|workflow|deploy|automate", "pipeline|job|step|runner", "matrix|cache|secret|reusable.workflow"]
 priority: normal
 color: "#FF6F00"
-routing_category: core
+routing_category: specialist
 ---
 # GitHub Actions CI/CD
 

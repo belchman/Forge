@@ -5,7 +5,7 @@ capabilities: [github-actions, ci-cd, workflow-yaml, matrix-builds, caching, reu
 patterns: ["github.action|workflow.yaml|ci.cd|ci.pipeline", "github.workflow|actions.yml|workflow.file", "ci.fix|workflow.debug|workflow.optimize|build.pipeline"]
 priority: normal
 color: "#F97583"
-routing_category: core
+routing_category: specialist
 ---
 # Workflow Automation Agent
 

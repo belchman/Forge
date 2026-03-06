@@ -48,6 +48,19 @@ impl MemoryDb {
             .sq()
     }
 
+    /// Get the most recent trust score across all sessions (for carrying forward to new sessions).
+    pub fn get_latest_trust_score(&self) -> Result<Option<f64>> {
+        self.conn
+            .query_row(
+                "SELECT score FROM trust_scores ORDER BY last_updated DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .sq()
+            .map(|o| o.flatten())
+    }
+
     pub fn update_trust_score(
         &self,
         session_id: &str,

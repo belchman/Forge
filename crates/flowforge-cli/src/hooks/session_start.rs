@@ -58,8 +58,13 @@ pub fn run() -> Result<()> {
                 eprintln!("[FlowForge] Cleaned up {} orphaned agent sessions", orphans);
             }
 
-            // Initialize trust score
-            db.create_trust_score(session_id, ctx.config.guidance.trust_initial_score)?;
+            // Initialize trust score — carry forward from previous session if available
+            let initial_trust = db
+                .get_latest_trust_score()
+                .ok()
+                .flatten()
+                .unwrap_or(ctx.config.guidance.trust_initial_score);
+            db.create_trust_score(session_id, initial_trust)?;
 
             // Auto-release stale/abandoned work items from previous sessions
             if ctx.config.work_tracking.work_stealing.enabled {

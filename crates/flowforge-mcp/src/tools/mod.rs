@@ -21,7 +21,7 @@ use std::collections::HashMap;
 
 use flowforge_agents::AgentRegistry;
 use flowforge_core::FlowForgeConfig;
-use flowforge_memory::{HnswCache, MemoryDb};
+use flowforge_memory::{HnswCache, MemoryDb, MultiHnswCache};
 
 use crate::tool_builder::ToolBuilderExt;
 
@@ -36,6 +36,7 @@ pub struct ToolRegistry {
     config: FlowForgeConfig,
     db: Option<MemoryDb>,
     hnsw_cache: HnswCache,
+    multi_cache: MultiHnswCache,
     agent_registry: Option<AgentRegistry>,
 }
 
@@ -55,6 +56,7 @@ impl ToolRegistry {
         let db_path = config.db_path();
         let db = MemoryDb::open(&db_path).ok();
         let hnsw_cache = flowforge_memory::new_hnsw_cache();
+        let multi_cache = flowforge_memory::new_multi_hnsw_cache();
         let agent_registry = AgentRegistry::load(&config.agents).ok();
 
         Self {
@@ -62,6 +64,7 @@ impl ToolRegistry {
             config,
             db,
             hnsw_cache,
+            multi_cache,
             agent_registry,
         }
     }
@@ -190,7 +193,7 @@ impl ToolRegistry {
 
             // Error recovery
             "error_list" => self.use_db(|db, _, p| error_recovery::list(db, p), params),
-            "error_find" => self.use_db(|db, _, p| error_recovery::find(db, p), params),
+            "error_find" => self.use_db(|db, cfg, p| error_recovery::find(db, cfg, p), params),
             "error_stats" => self.use_db(|db, _, _| error_recovery::stats(db), params),
 
             // Recovery strategies
@@ -211,6 +214,14 @@ impl ToolRegistry {
                 self.use_db(|db, _, p| similar_trajectories(db, p), params)
             }
             "batching_insights" => self.use_db(|db, _, _| batching_insights(db), params),
+
+            // Semantic search (cross-source vector search)
+            "semantic_search" => {
+                self.use_db(
+                    |db, c, p| semantic_search(db, c, p, &self.multi_cache),
+                    params,
+                )
+            }
 
             _ => json!({ "error": format!("unknown tool: {}", name) }),
         }
@@ -407,11 +418,12 @@ impl ToolRegistry {
         tools
             .tool(
                 "conversation_search",
-                "Search conversation messages by content (LIKE search)",
+                "Search conversation messages by content (LIKE or semantic vector search)",
             )
-            .required_str("session_id", "Session ID")
+            .optional_str("session_id", "Session ID (required for LIKE search, optional for semantic)")
             .required_str("query", "Search query")
             .optional_int_default("limit", "Max results", 10)
+            .optional_bool("semantic", "Use semantic vector search instead of LIKE (default: false)")
             .build();
         tools
             .tool(
@@ -659,6 +671,12 @@ impl ToolRegistry {
             .optional_int_default("limit", "Max results", 5)
             .build();
         tools
+            .tool("semantic_search", "Cross-source semantic vector search across all FlowForge memory (patterns, trajectories, errors, work items, conversations)")
+            .required_str("query", "Search query text to find semantically similar entries")
+            .optional_int_default("limit", "Max results per source type", 5)
+            .optional_str("source_types", "Comma-separated source types to search (default: all). Options: pattern_short, pattern_long, trajectory, error, work_item, conversation")
+            .build();
+        tools
             .tool("batching_insights", "Detect sequential tool calls that could be parallelized for efficiency")
             .build();
     }
@@ -718,8 +736,19 @@ fn similar_trajectories(db: &MemoryDb, params: &Value) -> flowforge_core::Result
     use crate::params::ParamExt;
     let task = params.require_str("task")?;
     let limit = params.u64_or("limit", 5) as usize;
-    let keywords: Vec<&str> = task.split_whitespace().filter(|w| w.len() > 3).collect();
-    let insights = db.find_similar_trajectories(&keywords, limit)?;
+
+    // Prefer vector search, fall back to keyword LIKE
+    let config = flowforge_core::config::PatternsConfig::default();
+    let embedder = flowforge_memory::default_embedder(&config);
+    let query_vec = embedder.embed(task);
+    let mut insights = db.find_similar_trajectories_semantic(&query_vec, limit)?;
+
+    // If vector search returned nothing, fall back to keyword LIKE
+    if insights.is_empty() {
+        let keywords: Vec<&str> = task.split_whitespace().filter(|w| w.len() > 3).collect();
+        insights = db.find_similar_trajectories(&keywords, limit)?;
+    }
+
     Ok(json!({
         "status": "ok",
         "count": insights.len(),
@@ -731,6 +760,64 @@ fn similar_trajectories(db: &MemoryDb, params: &Value) -> flowforge_core::Result
             "total_steps": i.total_steps,
             "success_rate": i.success_rate,
         })).collect::<Vec<_>>(),
+    }))
+}
+
+fn semantic_search(
+    db: &MemoryDb,
+    config: &FlowForgeConfig,
+    params: &Value,
+    cache: &MultiHnswCache,
+) -> flowforge_core::Result<Value> {
+    use crate::params::ParamExt;
+    let query = params.require_str("query")?;
+    let limit = params.u64_or("limit", 5) as usize;
+
+    let all_source_types = vec![
+        "pattern_short",
+        "pattern_long",
+        "trajectory",
+        "error",
+        "work_item",
+        "conversation",
+    ];
+
+    let source_types: Vec<&str> = if let Some(filter) = params.opt_str("source_types") {
+        filter.split(',').map(|s| s.trim()).collect()
+    } else {
+        all_source_types
+    };
+
+    let embedder = flowforge_memory::default_embedder(&config.patterns);
+    let query_vec = embedder.embed(query);
+
+    let results = db.search_vectors_cached(&query_vec, &source_types, limit * source_types.len(), cache)?;
+
+    // Group results by source type
+    let mut grouped: std::collections::HashMap<String, Vec<Value>> = std::collections::HashMap::new();
+    for r in &results {
+        let entry = json!({
+            "source_id": r.source_id,
+            "similarity": format!("{:.1}%", r.similarity * 100.0),
+            "similarity_raw": r.similarity,
+        });
+        grouped
+            .entry(r.source_type.clone())
+            .or_default()
+            .push(entry);
+    }
+
+    // Cap each group to `limit`
+    for entries in grouped.values_mut() {
+        entries.truncate(limit);
+    }
+
+    let total: usize = grouped.values().map(|v| v.len()).sum();
+    Ok(json!({
+        "status": "ok",
+        "query": query,
+        "total_results": total,
+        "results_by_source": grouped,
     }))
 }
 
@@ -763,7 +850,7 @@ mod tests {
     #[test]
     fn test_registry_has_68_tools() {
         let registry = ToolRegistry::new();
-        assert_eq!(registry.list().len(), 68);
+        assert_eq!(registry.list().len(), 69);
     }
 
     #[test]

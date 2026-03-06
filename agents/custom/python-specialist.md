@@ -5,7 +5,7 @@ capabilities: [python, asyncio, type-hints, mypy, pytest, fastapi, django, flask
 patterns: ["python|pip|virtualenv|django|fastapi", "pytest|typing|async.python|pep", "poetry|uv|mypy|pyright|flask"]
 priority: normal
 color: "#3776AB"
-routing_category: core
+routing_category: specialist
 ---
 # Python Specialist
 

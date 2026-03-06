@@ -58,6 +58,12 @@ pub fn create(
 
     work_tracking::create_item(&db, &config.work_tracking, &item)?;
 
+    // Embed work item vector
+    if config.vectors.embed_work_items {
+        let embedder = flowforge_memory::default_embedder(&config.patterns);
+        let _ = db.store_work_item_vector(&item.id, &item.title, item.description.as_deref(), &*embedder);
+    }
+
     println!(
         "{} Created work item: {} ({})",
         "✓".green(),

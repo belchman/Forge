@@ -5,7 +5,7 @@ capabilities: [issue-create, issue-label, issue-assign, issue-close, batch-triag
 patterns: ["github.issue|create.issue|open.issue|close.issue", "label|triage|assign.issue|issue.backlog", "stale.issue|batch.issue|issue.cleanup"]
 priority: normal
 color: "#0366D6"
-routing_category: core
+routing_category: specialist
 ---
 # Issue Tracker Agent
 

@@ -106,10 +106,10 @@ All 13 Claude Code hook events are wired:
 |-------|-------------------|
 | `SessionStart` | Creates session record, initializes trust score, starts trajectory recording, syncs work items |
 | `SessionEnd` | Closes trajectory, runs judgment + distillation, ingests transcript, consolidates patterns |
-| `UserPromptSubmit` | Routes to best agent, sets trajectory task description, injects context |
-| `PreToolUse` | Runs 5 guidance gates on ALL tools, executes plugin hooks, updates work heartbeats, blocks dangerous commands |
-| `PostToolUse` | Records trajectory step (success), tracks file edits |
-| `PostToolUseFailure` | Records trajectory step (failure), records error patterns |
+| `UserPromptSubmit` | Routes to best agent, injects context, records routing outcomes immediately, creates routing vectors for similarity generalization, lazy embedder, trivial prompt gate |
+| `PreToolUse` | Runs 5 guidance gates on ALL tools, plugin hooks, work heartbeats, failure escalation (ASK at 2, DENY at 3+) |
+| `PostToolUse` | Records trajectory step (success), tracks file edits, injection follow-through tracking (5 types), active learning routing updates |
+| `PostToolUseFailure` | Records trajectory step (failure) with error context, error fingerprint, active learning routing penalties |
 | `PreCompact` | Injects guidance before context compaction |
 | `SubagentStart` | Updates tmux monitor, assigns work item to agent |
 | `SubagentStop` | Updates tmux monitor, extracts patterns from agent output |
@@ -147,6 +147,8 @@ FlowForge is configured via `.flowforge/config.toml`. Key sections:
 [patterns]
 # Pattern learning: short-term/long-term promotion, HNSW settings
 semantic_embeddings = true    # Use AllMiniLM-L6-v2 (false = hash-based fallback)
+promotion_min_usage = 1       # Patterns can promote after a single confirmed use
+promotion_min_confidence = 0.5  # Lower bar for fast promotion
 clustering_min_points = 3     # DBSCAN minimum cluster size
 clustering_epsilon = 0.3      # DBSCAN distance threshold
 outlier_recluster_threshold = 50  # Recluster when this many outliers accumulate
@@ -167,6 +169,7 @@ trust_ask_threshold = 0.8
 trust_decay_per_hour = 0.02
 protected_paths = []
 custom_rules = []
+failure_deny_threshold = 3  # Same tool+input fails this many times → hard DENY
 
 [work_tracking]
 # Backend auto-detection: kanbus, beads, claude_tasks

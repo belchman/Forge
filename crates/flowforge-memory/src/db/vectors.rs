@@ -1,9 +1,36 @@
+use std::cell::RefCell;
+use std::collections::HashMap;
+
 use chrono::Utc;
 use rusqlite::{params, OptionalExtension};
 
 use flowforge_core::Result;
 
 use super::{blob_to_vector, parse_datetime, vector_to_blob, MemoryDb, SqliteExt, VectorEntry};
+
+/// Result from a generic cross-source vector search.
+#[derive(Debug, Clone)]
+pub struct VectorSearchResult {
+    pub db_id: i64,
+    pub source_type: String,
+    pub source_id: String,
+    pub similarity: f32,
+}
+
+/// Cached HNSW index for a specific set of source types.
+pub struct CachedSourceIndex {
+    pub(crate) index: crate::hnsw::HnswIndex,
+    pub(crate) id_to_source: HashMap<i64, (String, String)>, // db_id -> (source_type, source_id)
+    pub(crate) built_from_count: usize,
+}
+
+/// Multi-source HNSW cache keyed by sorted comma-joined source types.
+pub type MultiHnswCache = RefCell<HashMap<String, CachedSourceIndex>>;
+
+/// Create a new, empty multi-source HNSW cache.
+pub fn new_multi_hnsw_cache() -> MultiHnswCache {
+    RefCell::new(HashMap::new())
+}
 
 impl MemoryDb {
     pub fn store_vector(&self, source_type: &str, source_id: &str, vector: &[f32]) -> Result<i64> {
@@ -56,6 +83,17 @@ impl MemoryDb {
             .query_row(
                 "SELECT COUNT(*) FROM hnsw_entries WHERE source_type = ?1",
                 params![source_type],
+                |row| row.get(0),
+            )
+            .sq()
+    }
+
+    /// Count vectors for a specific source type + source ID pair.
+    pub fn count_vectors_for_source_id(&self, source_type: &str, source_id: &str) -> Result<i64> {
+        self.conn
+            .query_row(
+                "SELECT COUNT(*) FROM hnsw_entries WHERE source_type = ?1 AND source_id = ?2",
+                params![source_type, source_id],
                 |row| row.get(0),
             )
             .sq()
@@ -259,5 +297,203 @@ impl MemoryDb {
             )
             .sq()?;
         Ok(())
+    }
+
+    // ── Generic Vector Search ──
+
+    /// Search vectors across multiple source types.
+    /// If total > 50, builds an HNSW index; else brute-force cosine.
+    /// Returns results sorted by similarity desc.
+    pub fn search_vectors(
+        &self,
+        query_vec: &[f32],
+        source_types: &[&str],
+        k: usize,
+    ) -> Result<Vec<VectorSearchResult>> {
+        let mut all_vecs: Vec<(i64, String, String, Vec<f32>)> = Vec::new();
+        for st in source_types {
+            for (db_id, source_id, vec) in self.get_vectors_for_source(st)? {
+                all_vecs.push((db_id, st.to_string(), source_id, vec));
+            }
+        }
+
+        if all_vecs.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        if all_vecs.len() > 50 {
+            // HNSW search
+            let mut index = crate::hnsw::HnswIndex::new();
+            let points: Vec<(i64, Vec<f32>)> = all_vecs
+                .iter()
+                .map(|(id, _, _, v)| (*id, v.clone()))
+                .collect();
+            index.build(&points);
+
+            let id_map: HashMap<i64, (String, String)> = all_vecs
+                .iter()
+                .map(|(id, st, sid, _)| (*id, (st.clone(), sid.clone())))
+                .collect();
+
+            let raw = index.search(query_vec, k);
+            let results = raw
+                .into_iter()
+                .filter_map(|(db_id, distance)| {
+                    let (st, sid) = id_map.get(&db_id)?;
+                    Some(VectorSearchResult {
+                        db_id,
+                        source_type: st.clone(),
+                        source_id: sid.clone(),
+                        similarity: 1.0 - distance,
+                    })
+                })
+                .collect();
+            Ok(results)
+        } else {
+            // Brute-force cosine
+            let mut scored: Vec<VectorSearchResult> = all_vecs
+                .iter()
+                .map(|(db_id, st, sid, v)| VectorSearchResult {
+                    db_id: *db_id,
+                    source_type: st.clone(),
+                    source_id: sid.clone(),
+                    similarity: crate::embedding::cosine_similarity(query_vec, v),
+                })
+                .collect();
+            scored.sort_by(|a, b| {
+                b.similarity
+                    .partial_cmp(&a.similarity)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            scored.truncate(k);
+            Ok(scored)
+        }
+    }
+
+    /// Search vectors using a shared MultiHnswCache.
+    /// Cache key = sorted source types joined by comma.
+    /// Rebuilds when COUNT(*) for those types changes.
+    pub fn search_vectors_cached(
+        &self,
+        query_vec: &[f32],
+        source_types: &[&str],
+        k: usize,
+        cache: &MultiHnswCache,
+    ) -> Result<Vec<VectorSearchResult>> {
+        let mut sorted_types: Vec<&str> = source_types.to_vec();
+        sorted_types.sort();
+        let cache_key = sorted_types.join(",");
+
+        // Count current vectors for these source types
+        let mut current_count = 0usize;
+        for st in &sorted_types {
+            current_count += self.count_vectors_for_source(st)? as usize;
+        }
+
+        if current_count == 0 {
+            return Ok(Vec::new());
+        }
+
+        // Check if cache needs rebuild
+        let needs_rebuild = {
+            let c = cache.borrow();
+            match c.get(&cache_key) {
+                Some(cached) => cached.built_from_count != current_count,
+                None => true,
+            }
+        };
+
+        if needs_rebuild {
+            let mut id_to_source: HashMap<i64, (String, String)> = HashMap::new();
+            let mut points: Vec<(i64, Vec<f32>)> = Vec::new();
+
+            for st in &sorted_types {
+                for (db_id, source_id, vec) in self.get_vectors_for_source(st)? {
+                    id_to_source.insert(db_id, (st.to_string(), source_id));
+                    points.push((db_id, vec));
+                }
+            }
+
+            if points.len() > 50 {
+                let mut index = crate::hnsw::HnswIndex::new();
+                index.build(&points);
+                cache.borrow_mut().insert(
+                    cache_key.clone(),
+                    CachedSourceIndex {
+                        index,
+                        id_to_source,
+                        built_from_count: current_count,
+                    },
+                );
+            } else {
+                // Too few for HNSW — fall back to uncached brute-force
+                return self.search_vectors(query_vec, source_types, k);
+            }
+        }
+
+        // Search the cached index
+        let c = cache.borrow();
+        let cached = match c.get(&cache_key) {
+            Some(cached) => cached,
+            None => return Ok(Vec::new()),
+        };
+
+        let raw = cached.index.search(query_vec, k);
+        let results = raw
+            .into_iter()
+            .filter_map(|(db_id, distance)| {
+                let (st, sid) = cached.id_to_source.get(&db_id)?;
+                Some(VectorSearchResult {
+                    db_id,
+                    source_type: st.clone(),
+                    source_id: sid.clone(),
+                    similarity: 1.0 - distance,
+                })
+            })
+            .collect();
+        Ok(results)
+    }
+
+    /// Count vectors that DON'T have a matching hnsw_entries row for a given source type.
+    /// Used by the backfill command to find unvectorized records.
+    pub fn count_unvectorized_errors(&self) -> Result<i64> {
+        self.conn
+            .query_row(
+                "SELECT COUNT(*) FROM error_fingerprints WHERE id NOT IN (SELECT source_id FROM hnsw_entries WHERE source_type = 'error')",
+                [],
+                |row| row.get(0),
+            )
+            .sq()
+    }
+
+    pub fn count_unvectorized_work_items(&self) -> Result<i64> {
+        self.conn
+            .query_row(
+                "SELECT COUNT(*) FROM work_items WHERE id NOT IN (SELECT source_id FROM hnsw_entries WHERE source_type = 'work_item')",
+                [],
+                |row| row.get(0),
+            )
+            .sq()
+    }
+
+    pub fn count_unvectorized_trajectories(&self) -> Result<i64> {
+        self.conn
+            .query_row(
+                "SELECT COUNT(*) FROM trajectories WHERE status IN ('completed', 'judged') AND id NOT IN (SELECT source_id FROM hnsw_entries WHERE source_type = 'trajectory')",
+                [],
+                |row| row.get(0),
+            )
+            .sq()
+    }
+
+    pub fn count_unvectorized_conversations(&self) -> Result<i64> {
+        // Count user messages > 50 chars that don't have vectors
+        self.conn
+            .query_row(
+                "SELECT COUNT(*) FROM conversation_messages WHERE role = 'user' AND LENGTH(content) > 50 AND (session_id || ':' || message_index) NOT IN (SELECT source_id FROM hnsw_entries WHERE source_type = 'conversation')",
+                [],
+                |row| row.get(0),
+            )
+            .sq()
     }
 }

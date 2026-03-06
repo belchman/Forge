@@ -114,6 +114,34 @@ impl MemoryDb {
             .sq()
     }
 
+    /// Search conversation messages using semantic vector search.
+    pub fn search_conversation_messages_semantic(
+        &self,
+        query_vec: &[f32],
+        k: usize,
+    ) -> Result<Vec<ConversationMessage>> {
+        let results = self.search_vectors(query_vec, &["conversation"], k)?;
+
+        let mut messages = Vec::new();
+        for result in &results {
+            if result.similarity < 0.3 {
+                continue;
+            }
+            // Parse source_id: "session_id:message_index"
+            let parts: Vec<&str> = result.source_id.splitn(2, ':').collect();
+            if parts.len() == 2 {
+                let session_id = parts[0];
+                if let Ok(msg_idx) = parts[1].parse::<u32>() {
+                    let msgs = self.get_conversation_messages_range(session_id, msg_idx, msg_idx)?;
+                    if let Some(msg) = msgs.into_iter().next() {
+                        messages.push(msg);
+                    }
+                }
+            }
+        }
+        Ok(messages)
+    }
+
     pub fn search_conversation_messages(
         &self,
         session_id: &str,

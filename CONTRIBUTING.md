@@ -181,10 +181,14 @@ The init command in `crates/flowforge-cli/src/commands/init.rs` sets up new proj
 |------|---------|
 | `crates/flowforge-cli/src/main.rs` | CLI entry point, all command definitions |
 | `crates/flowforge-cli/src/commands/init.rs` | Project initialization, hook wiring template |
-| `crates/flowforge-cli/src/hooks/mod.rs` | Hook shared context (`HookContext`), `run_safe()`, `resolve_work_item_for_task()` |
+| `crates/flowforge-cli/src/hooks/mod.rs` | Hook shared context (`HookContext`), `run_safe()`, `resolve_work_item_for_task()`, session-end learning (finalize routing outcomes, adaptive weights) |
+| `crates/flowforge-cli/src/hooks/user_prompt_submit.rs` | Heaviest hook: routing, pattern/error/dependency injection, lazy embedder (OnceCell), prompt-length gate, immediate routing outcome recording, instant routing vector creation, auto-backfill of routing vectors |
+| `crates/flowforge-cli/src/hooks/post_tool_use.rs` | Trajectory steps, edit tracking, Claude Tasks sync, **injection follow-through tracking** (5 types: routing, general, test suggestions, file dependencies, patterns), active learning routing weight updates |
+| `crates/flowforge-cli/src/hooks/post_tool_use_failure.rs` | Error fingerprinting (`chars().take(200)` truncation), error context in trajectory steps, active learning routing weight penalties |
+| `crates/flowforge-cli/src/hooks/pre_tool_use.rs` | Guidance gates, failure prevention with escalation (ASK at 2, DENY at `failure_deny_threshold`), work-gate |
 | `crates/flowforge-cli/src/hooks/*.rs` | 13 hook handlers (one per file) |
 | `crates/flowforge-core/src/types/*.rs` | All shared types, decomposed by domain (work, sessions, agents, guidance, patterns, collaboration) |
-| `crates/flowforge-core/src/config.rs` | All config structs with defaults and cross-field validation |
+| `crates/flowforge-core/src/config.rs` | All config structs with defaults and cross-field validation; includes `failure_deny_threshold`, `promotion_min_usage`, `promotion_min_confidence` |
 | `crates/flowforge-core/src/error.rs` | Error enum |
 | `crates/flowforge-core/src/guidance/*.rs` | Guidance engine (5 gates), decomposed into engine + gates |
 | `crates/flowforge-core/src/plugin.rs` | Plugin manifest loader |
@@ -192,15 +196,34 @@ The init command in `crates/flowforge-cli/src/commands/init.rs` sets up new proj
 | `crates/flowforge-core/src/work_tracking/*.rs` | WorkBackend trait, KanbusBackend, BeadsBackend, WorkDb trait, work-stealing, Claude Tasks sync, status validation |
 | `crates/flowforge-core/src/trajectory.rs` | Trajectory types |
 | `crates/flowforge-memory/src/db/mod.rs` | MemoryDb struct, `with_transaction()`, core DB methods |
-| `crates/flowforge-memory/src/db/schema.rs` | SQLite schema (v5), indexes, migrations |
+| `crates/flowforge-memory/src/db/schema.rs` | SQLite schema, indexes, migrations |
 | `crates/flowforge-memory/src/db/sessions.rs` | Session CRUD (transaction-wrapped cascade) |
 | `crates/flowforge-memory/src/db/work_items.rs` | Work item CRUD, work-stealing, title-based lookup |
-| `crates/flowforge-memory/src/db/tests.rs` | DB test suite (143+ tests) |
-| `crates/flowforge-memory/src/patterns/*.rs` | Pattern store, decay, consolidation |
+| `crates/flowforge-memory/src/db/routing.rs` | Routing weights: `record_routing_success`, `record_routing_failure` |
+| `crates/flowforge-memory/src/db/adaptive_routing.rs` | Adaptive weight computation, `finalize_routing_outcomes`, routing outcome storage |
+| `crates/flowforge-memory/src/db/effectiveness.rs` | Context injection tracking, `rate_injection`, pattern effectiveness scoring |
+| `crates/flowforge-memory/src/db/file_dependencies.rs` | File co-edit tracking, `record_file_co_edit_pair` for real-time updates |
+| `crates/flowforge-memory/src/db/error_recovery.rs` | Error fingerprints, resolutions, `auto_detect_resolutions` |
+| `crates/flowforge-memory/src/db/vectors.rs` | HNSW vector storage, clustering, multi-source search |
+| `crates/flowforge-memory/src/db/tests.rs` | DB test suite |
+| `crates/flowforge-memory/src/patterns/mod.rs` | Pattern store with instant promotion on `record_feedback` |
+| `crates/flowforge-memory/src/patterns/lifecycle.rs` | Promotion, demotion, decay, consolidation, deduplication |
 | `crates/flowforge-memory/src/trajectory.rs` | Trajectory judge (judgment, distillation, consolidation) |
-| `crates/flowforge-mcp/src/tools/*.rs` | MCP tool registry + dispatch (53 tools), decomposed by category |
+| `crates/flowforge-mcp/src/tools/*.rs` | MCP tool registry + dispatch, decomposed by category |
 | `crates/flowforge-mcp/src/params.rs` | `ParamExt` trait with `require_str()` for MCP parameter validation |
 | `crates/flowforge-mcp/src/server.rs` | JSON-RPC server, tool count test |
 | `crates/flowforge-agents/src/registry.rs` | Agent loader (built-in + project + plugin) |
 | `.claude/settings.json` | Live hook wiring (must match init.rs template) |
 | `.mcp.json` | MCP server registration |
+
+## Active Learning Architecture
+
+FlowForge implements closed-loop learning that improves on every interaction:
+
+1. **`UserPromptSubmit`** records a routing outcome (pending) + creates a routing vector + stores `active_routing:{session_id}` KV
+2. **`PostToolUse`** reads the KV and calls `record_routing_success` on every successful tool call; checks injection follow-through (did Claude use the routing suggestion? run the suggested test? edit the suggested file? benefit from the injected pattern?)
+3. **`PostToolUseFailure`** calls `record_routing_failure` on every failed tool call
+4. **`SessionEnd`** finalizes pending routing outcomes to actual verdict, triggers adaptive weight computation if ≥5 outcomes exist
+5. **Pattern feedback** from injection follow-through immediately promotes patterns that meet thresholds (`usage >= 1, confidence >= 0.5`)
+
+This means every prompt teaches routing, every tool call reinforces or penalizes agents, and every confirmed pattern use promotes patterns — all within the same session.

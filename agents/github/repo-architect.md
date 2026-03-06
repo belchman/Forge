@@ -5,7 +5,7 @@ capabilities: [repo-structure, monorepo-design, workspace-config, module-boundar
 patterns: ["repo.struct|repository.layout|directory.structure", "monorepo|polyrepo|workspace|module.boundary", "codeowners|package.structure|reorganize"]
 priority: normal
 color: "#F9826C"
-routing_category: core
+routing_category: specialist
 ---
 # Repository Architect Agent
 

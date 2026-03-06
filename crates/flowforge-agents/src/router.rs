@@ -52,6 +52,27 @@ fn mentions_workflow(task: &str) -> bool {
         || t.contains("goal plan")
 }
 
+/// Check if task text mentions domain-specific keywords that warrant specialist agents.
+fn mentions_specialist(task: &str) -> bool {
+    let t = task.to_lowercase();
+    t.contains("python")
+        || t.contains("rust specialist")
+        || t.contains("database")
+        || t.contains("sql")
+        || t.contains("openapi")
+        || t.contains("swagger")
+        || t.contains("ci/cd")
+        || t.contains("github action")
+        || t.contains("release")
+        || t.contains("pr review")
+        || t.contains("pull request")
+        || t.contains("issue")
+        || t.contains("code quality")
+        || t.contains("code analy")
+        || t.contains("ml model")
+        || t.contains("machine learn")
+}
+
 impl AgentRouter {
     /// Create a new router with the given weight configuration.
     /// Non-finite weights are replaced with 0.0 to prevent NaN propagation.
@@ -93,10 +114,12 @@ impl AgentRouter {
         let want_swarm = mentions_swarm(task);
         let want_workflow = mentions_workflow(task);
 
+        let want_specialist = want_swarm || want_workflow || mentions_specialist(task);
         let filtered: Vec<&&AgentDef> = agents
             .iter()
             .filter(|agent| match agent.routing_category {
-                RoutingCategory::Core | RoutingCategory::Specialist => true,
+                RoutingCategory::Core => true,
+                RoutingCategory::Specialist => want_specialist,
                 RoutingCategory::SwarmOnly => want_swarm,
                 RoutingCategory::WorkflowOnly => want_workflow,
             })

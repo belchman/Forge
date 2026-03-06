@@ -39,6 +39,13 @@ pub fn create(db: &MemoryDb, config: &FlowForgeConfig, p: &Value) -> flowforge_c
         stealable: false,
     };
     flowforge_core::work_tracking::create_item(db, &config.work_tracking, &item)?;
+
+    // Embed work item vector
+    if config.vectors.embed_work_items {
+        let embedder = flowforge_memory::default_embedder(&config.patterns);
+        let _ = db.store_work_item_vector(&item.id, title, description, &*embedder);
+    }
+
     Ok(json!({"status": "ok", "id": item.id, "title": title}))
 }
 

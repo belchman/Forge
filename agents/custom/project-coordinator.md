@@ -5,7 +5,7 @@ capabilities: [project-management, milestone-tracking, dependency-management, ri
 patterns: ["project.coord|resource|schedule|risk", "allocate|timeline|budget|milestone", "roadmap|sprint|backlog|prioriti"]
 priority: normal
 color: "#F44336"
-routing_category: core
+routing_category: specialist
 ---
 # Project Coordinator
 

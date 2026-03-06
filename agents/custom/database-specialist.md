@@ -5,7 +5,7 @@ capabilities: [postgresql, mysql, sqlite, query-optimization, index-tuning, conn
 patterns: ["database.special|sql.expert|nosql|shard", "replica|partition|index|query.optim", "postgres|mysql|sqlite|schema|migrat"]
 priority: normal
 color: "#009688"
-routing_category: core
+routing_category: specialist
 ---
 # Database Specialist
 

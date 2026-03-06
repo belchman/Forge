@@ -5,7 +5,7 @@ capabilities: [openapi, swagger, api-documentation, schema-design, api-versionin
 patterns: ["openapi|swagger|api.doc|schema|spec", "endpoint|parameter|response|validate", "api.version|sdk.gen|rest.doc"]
 priority: normal
 color: "#CDDC39"
-routing_category: core
+routing_category: specialist
 ---
 # API Documentation (OpenAPI)
 

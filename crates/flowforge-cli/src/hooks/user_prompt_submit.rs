@@ -37,6 +37,20 @@ pub fn run() -> Result<()> {
         None
     };
 
+    // Prompt-length gate: count content words (skip stop words) to decide if ML is worth it.
+    // Trivial prompts ("ok", "yes", "do it", "go ahead") skip embedding/routing entirely.
+    let word_count = prompt.split_whitespace().count();
+    let is_trivial = word_count < 4;
+
+    // Lazy embedder: only load the ONNX model when we actually need it (non-trivial prompts).
+    // This saves ~200ms on trivial prompts that skip routing + semantic search.
+    let embedder_cell: std::cell::OnceCell<Box<dyn flowforge_memory::Embedder>> =
+        std::cell::OnceCell::new();
+    let get_embedder = || -> &dyn flowforge_memory::Embedder {
+        &**embedder_cell
+            .get_or_init(|| flowforge_memory::default_embedder(&ctx.config.patterns))
+    };
+
     // Resolve session_id and trajectory_id once for injection recording
     let (current_session_id, current_trajectory_id) = if let Some(db) = db {
         let sid = db
@@ -109,8 +123,13 @@ pub fn run() -> Result<()> {
 
     // Load learned weights once from the shared DB connection (A10)
     // Also pre-compute similarity-based matches for generalization (Fix 5)
-    let learned_weights = if let Some(db) = db {
-        load_learned_weights_from_db(db, &prompt)
+    // Skip on trivial prompts — no point routing "ok" or "yes"
+    let learned_weights = if !is_trivial {
+        if let Some(db) = db {
+            load_learned_weights_from_db(db, &prompt, get_embedder())
+        } else {
+            HashMap::new()
+        }
     } else {
         HashMap::new()
     };
@@ -122,8 +141,8 @@ pub fn run() -> Result<()> {
         None
     };
 
-    // Route the task to suggested agents
-    if ctx.config.hooks.routing {
+    // Route the task to suggested agents (skip for trivial prompts)
+    if ctx.config.hooks.routing && !is_trivial {
         if let Ok(registry) = AgentRegistry::load(&ctx.config.agents) {
             // Check for adaptive weights — override config if enough data exists
             let routing_config = if let Some(db) = db {
@@ -136,7 +155,7 @@ pub fn run() -> Result<()> {
 
             // Compute semantic scores for all agents
             let semantic_scores = if let Some(db) = db {
-                compute_semantic_scores(db, &prompt, &agents)
+                compute_semantic_scores(db, &prompt, &agents, get_embedder())
             } else {
                 None
             };
@@ -248,6 +267,43 @@ pub fn run() -> Result<()> {
                                     Some(top.confidence),
                                     metadata.as_deref(),
                                 );
+
+                                // IMMEDIATE LEARNING: Record routing outcome NOW, not at session end.
+                                // Outcome is "pending" — post_tool_use will update to success/failure.
+                                // This ensures routing_outcomes table is populated for adaptive weights.
+                                let task_pattern = super::extract_task_pattern(&prompt);
+                                if !task_pattern.is_empty() {
+                                    let b = &top.breakdown;
+                                    let _ = db.record_routing_outcome(
+                                        sid,
+                                        &top.agent_name,
+                                        &task_pattern,
+                                        b.pattern_score,
+                                        b.capability_score,
+                                        b.learned_score,
+                                        b.priority_score,
+                                        b.context_score,
+                                        b.semantic_score,
+                                        "pending",
+                                    );
+
+                                    // INSTANT VECTOR CREATION: Embed this task pattern NOW so
+                                    // similarity-based generalization works on the very next prompt.
+                                    // source_id = "task_pattern::agent_name" (matches migrate_embeddings format)
+                                    let vec_source_id = format!("{}::{}", task_pattern, top.agent_name);
+                                    // Only create if not already vectorized (dedup by source_id)
+                                    if db.count_vectors_for_source_id("routing", &vec_source_id).unwrap_or(1) == 0 {
+                                        let vec = get_embedder().embed(&task_pattern);
+                                        let _ = db.store_vector("routing", &vec_source_id, &vec);
+                                    }
+                                }
+
+                                // Store active routing suggestion in KV so post_tool_use
+                                // can record success/failure per-tool-call (active learning)
+                                let _ = db.set_meta(
+                                    &format!("active_routing:{}", sid),
+                                    &format!("{}|{}", top.agent_name, task_pattern),
+                                );
                             }
                         }
                     }
@@ -292,6 +348,42 @@ pub fn run() -> Result<()> {
                 context_parts.push(
                     "[FlowForge Work] No active work item. You MUST run `flowforge work create \"<description>\" --type task` before doing any work. Tool calls will be BLOCKED until a work item is active.".to_string()
                 );
+            }
+        }
+    }
+
+    // Inject related past work items from semantic search
+    if let Some(db) = db {
+        if ctx.config.vectors.embed_work_items && !is_trivial {
+            let query_vec = get_embedder().embed(&prompt);
+            if let Ok(results) = db.search_vectors(&query_vec, &["work_item"], 3) {
+                let completed_filter = flowforge_core::WorkFilter {
+                    status: Some(flowforge_core::WorkStatus::Completed),
+                    ..Default::default()
+                };
+                let completed_items = db.list_work_items(&completed_filter).unwrap_or_default();
+                let completed_ids: std::collections::HashSet<&str> =
+                    completed_items.iter().map(|i| i.id.as_str()).collect();
+
+                let related: Vec<_> = results
+                    .iter()
+                    .filter(|r| r.similarity > 0.4 && completed_ids.contains(r.source_id.as_str()))
+                    .take(2)
+                    .collect();
+
+                if !related.is_empty() {
+                    let mut work_ctx = String::from("[FlowForge Memory] Related past work:");
+                    for r in &related {
+                        if let Ok(Some(item)) = db.get_work_item(&r.source_id) {
+                            work_ctx.push_str(&format!(
+                                "\n- {} (sim: {:.0}%)",
+                                item.title,
+                                r.similarity * 100.0,
+                            ));
+                        }
+                    }
+                    context_parts.push(work_ctx);
+                }
             }
         }
     }
@@ -430,6 +522,27 @@ pub fn run() -> Result<()> {
                     }
                 }
             }
+
+            // Inject similar trajectory insights (skip for trivial prompts)
+            if ctx.config.vectors.embed_trajectories && !is_trivial {
+                let query_vec = get_embedder().embed(&prompt);
+                if let Ok(insights) = db.find_similar_trajectories_semantic(&query_vec, 2) {
+                    if !insights.is_empty() {
+                        let mut traj_ctx = String::from("[FlowForge Memory] Similar past approaches:");
+                        for insight in &insights {
+                            let verdict_str = insight.verdict.as_deref().unwrap_or("unknown");
+                            traj_ctx.push_str(&format!(
+                                "\n- {} (verdict: {}, {} steps, {:.0}% success)",
+                                insight.task_description.chars().take(80).collect::<String>(),
+                                verdict_str,
+                                insight.total_steps,
+                                insight.success_rate * 100.0,
+                            ));
+                        }
+                        context_parts.push(traj_ctx);
+                    }
+                }
+            }
         }
     }
 
@@ -511,16 +624,57 @@ pub fn run() -> Result<()> {
                         {
                             if let Some(best) = resolutions.first() {
                                 if best.confidence() > 0.5 {
-                                    resolution_hints.push(format!(
+                                    let mut hint = format!(
                                         "  Error: {} → Fix: {} (confidence: {:.0}%)",
                                         error_preview.chars().take(80).collect::<String>(),
                                         best.resolution_summary,
                                         best.confidence() * 100.0
-                                    ));
+                                    );
+                                    if !best.tool_sequence.is_empty() {
+                                        hint.push_str(&format!(
+                                            "\n    Steps: {}",
+                                            best.tool_sequence.join(" → ")
+                                        ));
+                                    }
+                                    if !best.files_changed.is_empty() {
+                                        let files: Vec<&str> = best.files_changed.iter().take(3).map(|s| s.as_str()).collect();
+                                        hint.push_str(&format!(
+                                            "\n    Files: {}",
+                                            files.join(", ")
+                                        ));
+                                    }
+                                    resolution_hints.push(hint);
                                 }
                             }
                         }
                     }
+                    // Semantic fallback: if no exact resolutions found, search by similarity
+                    if resolution_hints.is_empty() && ctx.config.vectors.embed_errors {
+                        for (error_preview, _) in &recent_errors {
+                            let query_vec = get_embedder().embed(error_preview);
+                            if let Ok(semantic_results) =
+                                db.find_error_resolutions_semantic(&query_vec, 2)
+                            {
+                                for (fp, resolutions) in &semantic_results {
+                                    if let Some(best) = resolutions.first() {
+                                        if best.confidence() > 0.5 {
+                                            resolution_hints.push(format!(
+                                                "  Similar error ({}): {} → Fix: {} (confidence: {:.0}%)",
+                                                fp.category,
+                                                fp.error_preview
+                                                    .chars()
+                                                    .take(60)
+                                                    .collect::<String>(),
+                                                best.resolution_summary,
+                                                best.confidence() * 100.0
+                                            ));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     if !resolution_hints.is_empty() {
                         let mut ctx_str = String::from(
                             "[FlowForge Error Recovery] Known fixes for recent errors:",
@@ -555,12 +709,8 @@ pub fn run() -> Result<()> {
                     if session.commands >= 20 {
                         if let Ok(Some(trajectory)) = db.get_active_trajectory(sid) {
                             if let Some(ref original_task) = trajectory.task_description {
-                                let config_for_embed =
-                                    flowforge_core::config::PatternsConfig::default();
-                                let embedding =
-                                    flowforge_memory::default_embedder(&config_for_embed);
-                                let task_vec = embedding.embed(original_task);
-                                let prompt_vec = embedding.embed(&prompt);
+                                let task_vec = get_embedder().embed(original_task);
+                                let prompt_vec = get_embedder().embed(&prompt);
                                 let similarity = flowforge_memory::cosine_similarity(
                                     &task_vec, &prompt_vec,
                                 );
@@ -641,7 +791,29 @@ pub fn run() -> Result<()> {
     if context_parts.is_empty() {
         ContextOutput::none().write()?;
     } else {
-        ContextOutput::with_context(context_parts.join("\n\n")).write()?;
+        // Apply context budget: truncate to configured char limit
+        let budget = ctx.config.hooks.context_budget_chars;
+        if budget > 0 {
+            let mut total = 0usize;
+            let mut budgeted_parts: Vec<String> = Vec::new();
+            for part in &context_parts {
+                let len = part.len();
+                if total + len + 2 > budget {
+                    // Fit what we can from this part
+                    let remaining = budget.saturating_sub(total + 2);
+                    if remaining > 80 {
+                        let truncated: String = part.chars().take(remaining).collect();
+                        budgeted_parts.push(format!("{}...", truncated));
+                    }
+                    break;
+                }
+                total += len + 2; // +2 for "\n\n" separator
+                budgeted_parts.push(part.clone());
+            }
+            ContextOutput::with_context(budgeted_parts.join("\n\n")).write()?;
+        } else {
+            ContextOutput::with_context(context_parts.join("\n\n")).write()?;
+        }
     }
 
     Ok(())
@@ -781,31 +953,43 @@ fn build_routing_context(db: &MemoryDb) -> Option<RoutingContext> {
     Some(ctx)
 }
 
-fn load_learned_weights_from_db(db: &MemoryDb, prompt: &str) -> HashMap<(String, String), f64> {
+fn load_learned_weights_from_db(
+    db: &MemoryDb,
+    prompt: &str,
+    embedder: &dyn flowforge_memory::Embedder,
+) -> HashMap<(String, String), f64> {
     let mut weights = HashMap::new();
 
     // 1. Load exact matches (existing behavior)
     if let Ok(all_weights) = db.get_all_routing_weights() {
-        for w in all_weights {
-            weights.insert((w.task_pattern, w.agent_name), w.weight);
+        for w in &all_weights {
+            weights.insert((w.task_pattern.clone(), w.agent_name.clone()), w.weight);
+        }
+
+        // 2. Auto-backfill: create routing vectors for weights that don't have one.
+        // This ensures similarity-based generalization works for ALL learned weights,
+        // not just new ones created after instant vector creation was added.
+        for w in &all_weights {
+            let source_id = format!("{}::{}", w.task_pattern, w.agent_name);
+            if db.count_vectors_for_source_id("routing", &source_id).unwrap_or(1) == 0 {
+                let vec = embedder.embed(&w.task_pattern);
+                let _ = db.store_vector("routing", &source_id, &vec);
+            }
         }
     }
 
-    // 2. Pre-compute similarity-based matches for generalization
-    // Skip embedding computation entirely if no routing vectors exist (common case)
+    // 3. Pre-compute similarity-based matches for generalization
     let routing_count = db.count_vectors_for_source("routing").unwrap_or(0);
     if routing_count == 0 {
         return weights;
     }
 
-    let config_for_embed = flowforge_core::config::PatternsConfig::default();
-    let embedding = flowforge_memory::default_embedder(&config_for_embed);
-    let query_vec = embedding.embed(prompt);
+    let query_vec = embedder.embed(prompt);
 
     if let Ok(routing_vecs) = db.get_vectors_for_source("routing") {
         for (_, source_id, vec) in &routing_vecs {
             let sim = flowforge_memory::cosine_similarity(&query_vec, vec);
-            if sim > 0.7 {
+            if sim > 0.55 {
                 // source_id is "task_pattern::agent_name"
                 if let Some((task_pattern, agent_name)) = source_id.split_once("::") {
                     let key = (task_pattern.to_string(), agent_name.to_string());
@@ -851,23 +1035,40 @@ fn compute_semantic_scores(
     db: &MemoryDb,
     prompt: &str,
     agents: &[&flowforge_core::AgentDef],
+    embedder: &dyn flowforge_memory::Embedder,
 ) -> Option<HashMap<String, f64>> {
-    let config_for_embed = flowforge_core::config::PatternsConfig::default();
-    let embedding = flowforge_memory::default_embedder(&config_for_embed);
-    let task_vec = embedding.embed(prompt);
+    let task_vec = embedder.embed(prompt);
+
+    // Try to load cached agent embeddings from DB first (source_type="agent_embed")
+    let cached = db.get_vectors_for_source("agent_embed").unwrap_or_default();
+    let cached_map: HashMap<&str, &Vec<f32>> = cached
+        .iter()
+        .map(|(_, source_id, vec)| (source_id.as_str(), vec))
+        .collect();
 
     let mut scores = HashMap::new();
+    let mut cache_misses = Vec::new();
     for agent in agents {
-        // Build agent text from description + capabilities
-        let mut agent_text = agent.description.clone();
-        if !agent.capabilities.is_empty() {
-            agent_text.push(' ');
-            agent_text.push_str(&agent.capabilities.join(" "));
+        if let Some(cached_vec) = cached_map.get(agent.name.as_str()) {
+            let sim = flowforge_memory::cosine_similarity(&task_vec, cached_vec);
+            scores.insert(agent.name.clone(), (sim as f64).clamp(0.0, 1.0));
+        } else {
+            // Cache miss: compute and store
+            let mut agent_text = agent.description.clone();
+            if !agent.capabilities.is_empty() {
+                agent_text.push(' ');
+                agent_text.push_str(&agent.capabilities.join(" "));
+            }
+            let agent_vec = embedder.embed(&agent_text);
+            let sim = flowforge_memory::cosine_similarity(&task_vec, &agent_vec);
+            scores.insert(agent.name.clone(), (sim as f64).clamp(0.0, 1.0));
+            cache_misses.push((agent.name.clone(), agent_vec));
         }
-        let agent_vec = embedding.embed(&agent_text);
-        let sim = flowforge_memory::cosine_similarity(&task_vec, &agent_vec);
-        // Normalize: cosine similarity can be negative with HashEmbedder, clamp to [0, 1]
-        scores.insert(agent.name.clone(), (sim as f64).clamp(0.0, 1.0));
+    }
+
+    // Backfill cache for misses (best-effort)
+    for (name, vec) in &cache_misses {
+        let _ = db.store_vector("agent_embed", name, vec);
     }
 
     // Tier 5A: Enhance with historical routing success/failure vectors
@@ -1053,7 +1254,8 @@ mod tests {
     fn test_load_learned_weights_empty_db() {
         let tmp = tempfile::NamedTempFile::new().unwrap();
         let db = MemoryDb::open(tmp.path()).unwrap();
-        let weights = load_learned_weights_from_db(&db, "fix authentication bug");
+        let emb = flowforge_memory::default_embedder(&flowforge_core::config::PatternsConfig::default());
+        let weights = load_learned_weights_from_db(&db, "fix authentication bug", &*emb);
         assert!(weights.is_empty());
     }
 
@@ -1062,7 +1264,8 @@ mod tests {
         let tmp = tempfile::NamedTempFile::new().unwrap();
         let db = MemoryDb::open(tmp.path()).unwrap();
         db.record_routing_success("fix bug", "debugger").unwrap();
-        let weights = load_learned_weights_from_db(&db, "fix bug");
+        let emb = flowforge_memory::default_embedder(&flowforge_core::config::PatternsConfig::default());
+        let weights = load_learned_weights_from_db(&db, "fix bug", &*emb);
         assert!(
             weights.contains_key(&("fix bug".to_string(), "debugger".to_string())),
             "should contain exact match weight"

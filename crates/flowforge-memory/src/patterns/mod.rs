@@ -157,6 +157,7 @@ impl<'a> PatternStore<'a> {
 
     /// Record feedback on a pattern (success/failure). (A4)
     /// Looks up in both short-term and long-term stores.
+    /// On positive feedback, also increments usage and attempts instant promotion.
     pub fn record_feedback(&self, pattern_id: &str, success: bool) -> Result<()> {
         // Try long-term first (feedback is most meaningful for promoted patterns)
         if self.db.get_pattern_long(pattern_id)?.is_some() {
@@ -173,6 +174,39 @@ impl<'a> PatternStore<'a> {
             };
             self.db
                 .update_pattern_short_confidence(pattern_id, new_confidence)?;
+
+            // Instant promotion: if positive feedback pushed this above threshold, promote NOW
+            // instead of waiting for consolidation at session end.
+            if success {
+                let _ = self.db.update_pattern_short_usage(pattern_id);
+                let usage = p.usage_count + 1;
+                if usage >= self.config.promotion_min_usage
+                    && new_confidence >= self.config.promotion_min_confidence
+                {
+                    let now = chrono::Utc::now();
+                    let long_pattern = flowforge_core::LongTermPattern {
+                        id: p.id.clone(),
+                        content: p.content.clone(),
+                        category: p.category.clone(),
+                        confidence: new_confidence,
+                        usage_count: usage,
+                        success_count: 0,
+                        failure_count: 0,
+                        created_at: p.created_at,
+                        promoted_at: now,
+                        last_used: now,
+                        embedding_id: p.embedding_id,
+                    };
+                    let _ = self.db.with_transaction(|| {
+                        self.db.store_pattern_long(&long_pattern)?;
+                        if let Some(eid) = p.embedding_id {
+                            self.db.update_vector_source_type(eid, "pattern_long")?;
+                        }
+                        self.db.delete_pattern_short(&p.id)?;
+                        Ok(())
+                    });
+                }
+            }
             return Ok(());
         }
 

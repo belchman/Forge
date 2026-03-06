@@ -8,6 +8,7 @@ pub mod test_helpers;
 pub mod trajectory;
 
 pub use db::failure_patterns::FailurePattern;
+pub use db::vectors::{new_multi_hnsw_cache, CachedSourceIndex, MultiHnswCache, VectorSearchResult};
 pub use db::MemoryDb;
 #[cfg(feature = "semantic")]
 pub use embedding::SemanticEmbedder;

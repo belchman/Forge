@@ -1,6 +1,6 @@
 ## [FlowForge] Agent Orchestration — Operational Reference
 
-Rust workspace: 6 crates, 60 agents, 68 MCP tools, 13 hooks.
+Rust workspace: 6 crates, 60 agents, 69 MCP tools, 13 hooks.
 GitHub: https://github.com/belchman/flow-forge
 
 ---
@@ -28,7 +28,7 @@ GitHub: https://github.com/belchman/flow-forge
 | `flowforge-core` | `crates/flowforge-core/` | Types, config, work tracking, error types |
 | `flowforge-memory` | `crates/flowforge-memory/` | SQLite DB, HNSW vector search, schema v11 |
 | `flowforge-agents` | `crates/flowforge-agents/` | Agent registry, 6-signal router |
-| `flowforge-mcp` | `crates/flowforge-mcp/` | MCP server, 68 JSON-RPC 2.0 tools |
+| `flowforge-mcp` | `crates/flowforge-mcp/` | MCP server, 69 JSON-RPC 2.0 tools |
 | `flowforge-tmux` | `crates/flowforge-tmux/` | tmux monitor integration |
 
 #### Key Paths
@@ -137,7 +137,7 @@ FlowForge uses BOTH a fast Rust-based memory system AND Claude's native auto-mem
 
 #### FlowForge Memory (fast, semantic, searchable)
 
-SQLite + HNSW vector search with semantic embeddings (AllMiniLM-L6-v2) and DBSCAN topic clustering.
+SQLite + HNSW vector search with semantic embeddings (AllMiniLM-L6-v2) and DBSCAN topic clustering. Multi-source vectorization embeds patterns, errors, work items, trajectories, and conversations for cross-source semantic recall via the `semantic_search` MCP tool.
 
 | Command | Purpose |
 |---------|---------|
@@ -191,6 +191,7 @@ Patterns ranked by `similarity * (0.5 + 0.5 * effectiveness_score)` with token b
 | `flowforge learn tune-clusters` | Auto-tune DBSCAN parameters |
 | `flowforge learn dependencies [--file <path>] [--limit N]` | File co-edit dependency graph |
 | `flowforge learn download-model` | Download AllMiniLM-L6-v2 semantic model |
+| `flowforge learn vectorize [--source <type>] [--limit N] [--dry-run]` | Backfill vector embeddings for existing data |
 
 #### MCP Tools
 `learning_store`, `learning_search`, `learning_feedback`, `learning_stats`, `learning_clusters`, `trajectory_list`, `trajectory_get`, `trajectory_judge`, `failure_patterns`, `similar_trajectories`, `task_decomposition`, `batching_insights`, `file_dependencies`
@@ -199,9 +200,14 @@ Patterns ranked by `similarity * (0.5 + 0.5 * effectiveness_score)` with token b
 - Trajectory recording (every tool call in session)
 - Trajectory judging at session end (success ratio + work item completion)
 - Pattern promotion (short-term → long-term based on effectiveness)
+- **Instant pattern promotion** — `record_feedback(true)` promotes to long-term immediately when `usage_count >= 1` AND `confidence >= 0.5` (no waiting for session-end consolidation)
 - Cluster updates on learning operations
 - Context injection of relevant patterns on `UserPromptSubmit`
 - Self-tuning injection threshold (adjusts `min_injection_similarity` from effectiveness data)
+- **Active learning per-tool-call** — every successful tool call feeds back to routing weights via `record_routing_success`; failures feed `record_routing_failure`
+- **Injection follow-through tracking** — `PostToolUse` checks if Claude acted on injected context (routing followed, test run, file dependency edited, pattern used) and rates injection effectiveness
+- **Instant routing vector creation** — when routing fires, the task pattern is embedded immediately so similarity-based generalization works on the very next prompt
+- **Auto-backfill routing vectors** — existing routing weights without vectors get vectorized on the next prompt
 
 #### What You Do Manually
 - `flowforge learn store` — Capture important patterns explicitly
@@ -338,9 +344,11 @@ Failure loop detection: warn after 1st recurrence, ask after 2nd.
 `error_list`, `error_find`, `error_stats`, `recovery_strategies`
 
 #### What's Automatic
-- Error fingerprinting on `PostToolUseFailure` hook
+- Error fingerprinting on `PostToolUseFailure` hook (uses `chars().take(200)` for consistent truncation)
 - Resolution matching and injection on `UserPromptSubmit` hook
 - Failure pattern mining during `learn patterns --mine`
+- **Failure escalation**: same tool+input 2x → ASK with resolution hint; 3x+ → DENY (hard block). Configurable via `guidance.failure_deny_threshold`.
+- Error context preserved in trajectory steps (not lost as `None`)
 
 ---
 
@@ -462,10 +470,10 @@ All 13 hooks with trigger event, timeout, and key behavior.
 | Hook | Trigger | Timeout | Key Actions | Output |
 |------|---------|---------|-------------|--------|
 | `SessionStart` | Session begins | 10s | Create session, sync kanbus, continuity context | Context |
-| `UserPromptSubmit` | Each user prompt | 5s | Routing, patterns, work-gate, error recovery, anti-drift | Context |
-| `PreToolUse` | Before tool exec | 3s | Guidance gates, work-gate, heartbeat, failure prevention | Deny/Ask/Allow |
-| `PostToolUse` | After tool exec | 3s | Record edits, trajectory steps, sync Claude tasks | None |
-| `PostToolUseFailure` | Tool fails | 3s | Record error fingerprint, failure pattern | None |
+| `UserPromptSubmit` | Each user prompt | 5s | Routing, patterns, work-gate, error recovery, anti-drift, immediate routing outcome recording, instant routing vector creation, lazy embedder (OnceCell), prompt-length gate (<4 words skips ML) | Context |
+| `PreToolUse` | Before tool exec | 3s | Guidance gates, work-gate, heartbeat, failure prevention (ASK at 2 failures, DENY at `failure_deny_threshold` default 3) | Deny/Ask/Allow |
+| `PostToolUse` | After tool exec | 3s | Record edits, trajectory steps, sync Claude tasks, **injection follow-through tracking** (5 types: routing, general, test, file deps, patterns), active learning routing weight updates | None |
+| `PostToolUseFailure` | Tool fails | 3s | Record error fingerprint, failure pattern, active learning routing weight penalty, error context in trajectory steps | None |
 | `PreCompact` | Before context compaction | — | Consolidate patterns, preservation guidance | Context |
 | `SubagentStart` | Agent spawns | — | Create agent session, inject agent context | Context |
 | `SubagentStop` | Agent finishes | — | End agent session, rollup stats, extract patterns | None |
@@ -527,10 +535,11 @@ cargo build --release && rm -f ~/.cargo/bin/flowforge && cp target/release/flowf
 | Section | Key Settings |
 |---------|-------------|
 | `[hooks]` | `inject_agent_body = false` (1-line summary vs full body, ~460 tokens saved) |
-| `[patterns]` | `min_injection_similarity = 0.55`, `context_budget = 2000`, `short_term_max` |
-| `[guidance]` | `enabled`, trust thresholds, gate configs |
+| `[patterns]` | `min_injection_similarity = 0.55`, `context_budget = 2000`, `short_term_max`, `promotion_min_usage = 1`, `promotion_min_confidence = 0.5` |
+| `[guidance]` | `enabled`, trust thresholds, gate configs, `failure_deny_threshold = 3` |
 | `[routing]` | 6 signal weights, `confidence_sharpening` |
 | `[memory]` | `retention_days = 90` |
+| `[vectors]` | `embed_errors = true`, `embed_work_items = true`, `embed_trajectories = true`, `embed_conversations = true`, `conversation_max_per_session = 50`, `conversation_min_length = 50` |
 
 ---
 
@@ -544,7 +553,7 @@ cargo build --release && rm -f ~/.cargo/bin/flowforge && cp target/release/flowf
 
 ---
 
-### 21. Complete MCP Tool Reference (68 tools)
+### 21. Complete MCP Tool Reference (69 tools)
 
 | Category | Tools |
 |----------|-------|
@@ -559,7 +568,7 @@ cargo build --release && rm -f ~/.cargo/bin/flowforge && cp target/release/flowf
 | **Guidance** (4) | `guidance_rules`, `guidance_trust`, `guidance_audit`, `guidance_verify` |
 | **Plugins** (2) | `plugin_list`, `plugin_info` |
 | **Trajectories** (3) | `trajectory_list`, `trajectory_get`, `trajectory_judge` |
-| **Intelligence** (5) | `failure_patterns`, `similar_trajectories`, `task_decomposition`, `batching_insights`, `file_dependencies` |
+| **Intelligence** (6) | `failure_patterns`, `similar_trajectories`, `task_decomposition`, `batching_insights`, `file_dependencies`, `semantic_search` |
 | **Error Recovery** (4) | `error_list`, `error_find`, `error_stats`, `recovery_strategies` |
 | **Tool Metrics** (3) | `tool_metrics`, `tool_best_agents`, `session_cost` |
 | **Team** (2) | `team_status`, `team_log` |

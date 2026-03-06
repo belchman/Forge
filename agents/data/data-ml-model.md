@@ -5,7 +5,7 @@ capabilities: [machine-learning, data-pipelines, feature-engineering, model-trai
 patterns: ["ml|machine.learn|model|train|evaluat", "data.pipeline|feature|predict", "experiment|hyperparamet|deploy.model|dataset"]
 priority: normal
 color: "#00BCD4"
-routing_category: core
+routing_category: specialist
 ---
 # ML and Data Engineering
 

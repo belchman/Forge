@@ -104,6 +104,19 @@ impl MemoryDb {
         Ok(())
     }
 
+    /// Update pending routing outcomes for a session to their final verdict.
+    /// Called at session end when the trajectory verdict is known.
+    pub fn finalize_routing_outcomes(&self, session_id: &str, outcome: &str) -> Result<u64> {
+        let count = self
+            .conn
+            .execute(
+                "UPDATE routing_outcomes SET outcome = ?1 WHERE session_id = ?2 AND outcome = 'pending'",
+                params![outcome, session_id],
+            )
+            .sq()?;
+        Ok(count as u64)
+    }
+
     /// Count total routing outcomes recorded.
     pub fn count_routing_outcomes(&self) -> Result<u64> {
         self.conn

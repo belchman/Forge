@@ -87,7 +87,10 @@ fn test_record_feedback_long_term() {
 #[test]
 fn test_record_feedback_short_term() {
     let db = setup_db();
-    let config = PatternsConfig::default();
+    let mut config = PatternsConfig::default();
+    // Raise promotion thresholds so instant promotion doesn't fire during this test
+    config.promotion_min_usage = 10;
+    config.promotion_min_confidence = 0.9;
     let store = PatternStore::new(&db, &config);
 
     let id = store
@@ -103,6 +106,70 @@ fn test_record_feedback_short_term() {
     store.record_feedback(&id, false).unwrap();
     let updated2 = db.get_pattern_short(&id).unwrap().unwrap();
     assert!(updated2.confidence < updated.confidence);
+}
+
+#[test]
+fn test_record_feedback_instant_promotion() {
+    let db = setup_db();
+    let config = PatternsConfig::default(); // promotion_min_usage=1, promotion_min_confidence=0.5
+    let store = PatternStore::new(&db, &config);
+
+    let id = store
+        .store_short_term("instant promote pattern", "test")
+        .unwrap();
+    // Pattern starts at confidence 0.5, usage 0
+    assert!(db.get_pattern_short(&id).unwrap().is_some());
+    assert!(db.get_pattern_long(&id).unwrap().is_none());
+
+    // Positive feedback: confidence → 0.55, usage → 1 → meets thresholds → instant promotion
+    store.record_feedback(&id, true).unwrap();
+    assert!(db.get_pattern_short(&id).unwrap().is_none(), "should be removed from short-term");
+    let long = db.get_pattern_long(&id).unwrap().expect("should be in long-term");
+    assert!(long.confidence >= 0.55);
+    assert_eq!(long.usage_count, 1);
+}
+
+/// Prove: pattern injection follow-through drives instant promotion.
+/// Simulates the post_tool_use.rs flow: inject pattern → tool success → record_feedback → promoted.
+#[test]
+fn test_injection_follow_through_drives_promotion() {
+    let db = setup_db();
+    let config = PatternsConfig::default(); // min_usage=1, min_confidence=0.5
+
+    // Step 1: Store a pattern (simulates learning from a previous session)
+    let store = PatternStore::new(&db, &config);
+    let id = store.store_short_term("when fixing SQL, always check indexes first", "error_fix").unwrap();
+
+    // Verify it's in short-term with default confidence 0.5
+    let p = db.get_pattern_short(&id).unwrap().unwrap();
+    assert!((p.confidence - 0.5).abs() < 0.01);
+    assert_eq!(p.usage_count, 0);
+
+    // Step 2: user_prompt_submit injects this pattern into context
+    // (simulated by recording the injection)
+    use flowforge_core::SessionInfo;
+    let session = SessionInfo {
+        id: "sess-injection".to_string(),
+        started_at: chrono::Utc::now(),
+        ended_at: None,
+        cwd: "/tmp".to_string(),
+        edits: 0, commands: 0, summary: None, transcript_path: None,
+    };
+    db.create_session(&session).unwrap();
+    db.record_context_injection("sess-injection", None, "pattern", Some(&id), Some(0.8), None).unwrap();
+
+    // Step 3: Tool succeeds → post_tool_use calls record_feedback(id, true)
+    // This is what the injection follow-through code does in post_tool_use.rs
+    store.record_feedback(&id, true).unwrap();
+
+    // Step 4: PROVE the pattern was instantly promoted to long-term
+    assert!(db.get_pattern_short(&id).unwrap().is_none(), "should be removed from short-term");
+    let long = db.get_pattern_long(&id).unwrap().expect("should be in long-term after feedback");
+    assert!(long.confidence >= 0.55, "confidence should have increased");
+    assert_eq!(long.usage_count, 1, "usage should have incremented");
+
+    // This proves: a pattern stored in session N, injected in session N+1,
+    // and confirmed by tool success gets promoted to long-term WITHIN the same prompt cycle.
 }
 
 #[test]

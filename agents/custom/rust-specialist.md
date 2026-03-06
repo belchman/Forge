@@ -5,7 +5,7 @@ capabilities: [rust, cargo, ownership, borrowing, lifetimes, traits, async-rust,
 patterns: ["rust|cargo|ownership|lifetime|trait", "borrow|async.rust|tokio|serde", "clippy|unsafe|workspace|crate"]
 priority: normal
 color: "#DEA584"
-routing_category: core
+routing_category: specialist
 ---
 # Rust Specialist
 

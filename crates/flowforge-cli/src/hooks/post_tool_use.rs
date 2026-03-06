@@ -85,6 +85,106 @@ pub fn run() -> Result<()> {
         }
     }
 
+    // INJECTION FOLLOW-THROUGH: Every tool call checks if it matches
+    // a recent context injection. This creates closed-loop learning for ALL injection types:
+    // - Routing: did Claude spawn the suggested agent? → routing weight boost
+    // - Test suggestion: did Claude run the suggested test? → test co-occurrence boost
+    // - File dependency: did Claude edit a suggested co-edit file? → dependency boost
+    // - Pattern: tool success after pattern injection → pattern confidence boost
+    //
+    // This is the core mechanism that makes memory learn from every interaction.
+    ctx.with_db("injection_follow_through", |db| {
+        let session = match db.get_current_session()? {
+            Some(s) => s,
+            None => return Ok(()),
+        };
+        let sid = &session.id;
+
+        // 1. ROUTING follow-through: if Task tool was called, check if agent matches suggestion
+        if input.tool_name == "Task" {
+            let spawned_agent = input.tool_input.get("name")
+                .or_else(|| input.tool_input.get("subagent_type"))
+                .and_then(|v| v.as_str());
+
+            if let Some(agent) = spawned_agent {
+                let key = format!("active_routing:{}", sid);
+                if let Some(routing_info) = db.get_meta(&key)? {
+                    if let Some((suggested_agent, task_pattern)) = routing_info.split_once('|') {
+                        let followed = agent.eq_ignore_ascii_case(suggested_agent)
+                            || agent.contains(suggested_agent);
+                        if followed {
+                            // Strong positive: user followed routing suggestion
+                            let _ = db.record_routing_success(task_pattern, suggested_agent);
+                            let _ = db.record_routing_success(task_pattern, suggested_agent); // double boost
+                            let _ = db.rate_injection(sid, "routing", "followed");
+                        } else {
+                            // Weak negative: user chose a different agent
+                            let _ = db.rate_injection(sid, "routing", "ignored");
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. ROUTING: general tool success feeds back to routing weights
+        let key = format!("active_routing:{}", sid);
+        if let Some(routing_info) = db.get_meta(&key)? {
+            if let Some((agent_name, task_pattern)) = routing_info.split_once('|') {
+                let _ = db.record_routing_success(task_pattern, agent_name);
+            }
+        }
+
+        // 3. TEST SUGGESTION follow-through: if Bash was called with a test command,
+        //    check if it matches a recently suggested test
+        if input.tool_name == "Bash" {
+            if let Some(cmd) = input.tool_input.get("command").and_then(|v| v.as_str()) {
+                if is_test_command(cmd) {
+                    let _ = db.rate_injection(sid, "test_suggestion", "followed");
+                }
+            }
+        }
+
+        // 4. FILE DEPENDENCY follow-through: if Edit/Write targets a file that was
+        //    suggested as a co-edit dependency, record the follow-through
+        if matches!(input.tool_name.as_str(), "Write" | "Edit" | "MultiEdit") {
+            if let Some(file_path) = input.tool_input.get("file_path").and_then(|v| v.as_str()) {
+                // Check if this file was in the last file_dependency injection
+                if let Ok(injections) = db.get_injections_for_session(sid) {
+                    let has_dep_injection = injections.iter().any(|i| i.injection_type == "file_dependency");
+                    if has_dep_injection {
+                        let _ = db.rate_injection(sid, "file_dependency", "followed");
+
+                        // Also boost the co-edit count for this file pair
+                        if let Ok(edits) = db.get_edits_for_session(sid) {
+                            if let Some(prev_edit) = edits.iter().rev().nth(1) {
+                                if prev_edit.file_path != file_path {
+                                    let _ = db.record_file_co_edit_pair(
+                                        &prev_edit.file_path,
+                                        file_path,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 5. PATTERN follow-through: any successful tool call after pattern injection
+        //    boosts pattern confidence
+        if let Ok(injections) = db.get_injections_for_session(sid) {
+            let has_pattern = injections.iter().any(|i| i.injection_type == "pattern");
+            if has_pattern {
+                let store = flowforge_memory::PatternStore::new(db, &ctx.config.patterns);
+                for inj in injections.iter().filter(|i| i.injection_type == "pattern") {
+                    let _ = store.record_feedback(&inj.reference_id, true);
+                }
+            }
+        }
+
+        Ok(())
+    });
+
     // Check recent tool sequence against failure patterns (observational logging)
     ctx.with_db("check_failure_patterns", |db| {
         if let Some(session) = db.get_current_session()? {
@@ -102,27 +202,6 @@ pub fn run() -> Result<()> {
 
                 let matches = db.check_failure_pattern(&recent_tools)?;
                 for m in &matches {
-                    // Only log high-frequency patterns to avoid flooding hook-errors.log
-                    if m.occurrence_count > 2 {
-                        if let Ok(project_dir) = std::env::current_dir() {
-                            let log_path = project_dir.join(".flowforge").join("hook-errors.log");
-                            if let Ok(mut file) = std::fs::OpenOptions::new()
-                                .create(true)
-                                .append(true)
-                                .open(&log_path)
-                            {
-                                use std::io::Write;
-                                let _ = writeln!(
-                                    file,
-                                    "[{}] WARN failure_pattern_triggered: {} -- {} (hint: {})",
-                                    Utc::now().to_rfc3339(),
-                                    m.pattern_name,
-                                    m.description,
-                                    m.prevention_hint,
-                                );
-                            }
-                        }
-                    }
                     db.record_failure_pattern(
                         &m.pattern_name,
                         &m.description,

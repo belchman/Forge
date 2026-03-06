@@ -171,7 +171,7 @@ fn test_statusline_empty_stdin() {
         .write_stdin("{}")
         .assert()
         .success()
-        .stdout(predicate::str::contains("proven"));
+        .stdout(predicate::str::contains("pat"));
 }
 
 #[test]
@@ -192,9 +192,9 @@ fn test_statusline_legend() {
         .assert()
         .success()
         .stdout(predicate::str::contains("Dashboard Legend"))
-        .stdout(predicate::str::contains("HEADER LINE"))
-        .stdout(predicate::str::contains("INTELLIGENCE + SESSION LINE"))
-        .stdout(predicate::str::contains("WORK + AGENTS LINE"));
+        .stdout(predicate::str::contains("LINE 1: IDENTITY + ENVIRONMENT"))
+        .stdout(predicate::str::contains("LINE 2: INTELLIGENCE + SESSION METRICS"))
+        .stdout(predicate::str::contains("LINE 3: WORK + AGENTS"));
 }
 
 // ── Session subcommands ──

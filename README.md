@@ -7,10 +7,10 @@ Agent orchestration for [Claude Code](https://docs.anthropic.com/en/docs/claude-
 
 ## Features
 
-- **Agent routing** &mdash; routes tasks to the best agent using pattern matching, capability scoring, and learned weights
-- **Pattern learning** &mdash; records what works and improves routing over time via short-term/long-term pattern promotion
+- **Agent routing** &mdash; routes tasks to the best agent using pattern matching, capability scoring, and learned weights; routing weights update on every tool call (active learning), not just session end
+- **Pattern learning** &mdash; records what works and improves routing over time via short-term/long-term pattern promotion; patterns promote instantly within the same turn when effectiveness is confirmed
 - **Trajectory learning** &mdash; records complete tool-use sequences per session, judges outcomes, distills successful paths into reusable strategies
-- **Semantic memory** &mdash; SQLite + HNSW vector search with real semantic embeddings (AllMiniLM-L6-v2 via fastembed), DBSCAN topic clustering, per-cluster P95 dedup thresholds, and cluster-aware decay
+- **Semantic memory** &mdash; SQLite + HNSW vector search with real semantic embeddings (AllMiniLM-L6-v2 via fastembed), DBSCAN topic clustering, per-cluster P95 dedup thresholds, and cluster-aware decay; routing vectors created instantly for similarity-based generalization
 - **Guidance control plane** &mdash; configurable safety gates on all tool uses with trust scoring, SHA-256 audit chain, and automatic rule enforcement
 - **Work tracking** &mdash; tracks tasks, epics, and bugs with a full audit trail; native Kanbus crate integration (no CLI shelling), Beads JSONL reads, and Claude Tasks dual-write; work-stealing redistributes stale/abandoned tasks automatically
 - **Conversation storage** &mdash; ingests Claude Code JSONL transcripts into SQLite for querying past sessions
@@ -128,10 +128,10 @@ FlowForge wires into all 13 Claude Code hook events:
 |-------|---------------------|
 | SessionStart | Creates session record, initializes trust score, starts trajectory recording, syncs work items |
 | SessionEnd | Closes trajectory, runs judgment + distillation, ingests transcript, consolidates patterns |
-| UserPromptSubmit | Routes to best agent, sets trajectory task description, injects context + mailbox messages |
-| PreToolUse | Runs 5 guidance gates on ALL tools, executes plugin hooks, updates work heartbeats, blocks dangerous commands |
-| PostToolUse | Records trajectory step (success), tracks file edits |
-| PostToolUseFailure | Records trajectory step (failure), records error patterns for learning |
+| UserPromptSubmit | Routes to best agent, sets trajectory task description, injects context + mailbox messages, records routing outcomes immediately, creates routing vectors for instant generalization, lazy embedder loading, trivial prompt gate |
+| PreToolUse | Runs 5 guidance gates on ALL tools, executes plugin hooks, updates work heartbeats, blocks dangerous commands, **failure escalation** (ASK at 2 failures, DENY at 3+) |
+| PostToolUse | Records trajectory step (success), tracks file edits, **injection follow-through tracking** (rates routing/test/file-dep/pattern injections as followed or ignored), active learning routing weight updates |
+| PostToolUseFailure | Records trajectory step (failure) with error context, records error patterns, active learning routing weight penalties |
 | PreCompact | Injects guidance before context compaction |
 | SubagentStart | Updates monitor, stores transcript path, assigns work to agent |
 | SubagentStop | Ingests agent transcript, extracts patterns from output |
@@ -218,10 +218,11 @@ path = "agents/specialist.md"
 
 FlowForge records the complete tool-use sequence for every session:
 
-1. **Recording** &mdash; each tool use is logged as a step with SHA-256 hashed input
+1. **Recording** &mdash; each tool use is logged as a step with SHA-256 hashed input (errors now include context)
 2. **Judgment** &mdash; at session end, trajectories are scored: `success_ratio * 0.6 + work_item_factor * 0.3 + pattern_match * 0.1`
 3. **Distillation** &mdash; successful trajectories are converted to reusable strategy patterns stored in HNSW
 4. **Consolidation** &mdash; old failures are pruned, similar successes are merged
+5. **Active learning** &mdash; every tool call immediately feeds routing weight updates (success +0.05, failure -0.05) instead of waiting for session-end judgment
 
 ### Semantic Memory
 
@@ -233,6 +234,10 @@ FlowForge uses real semantic embeddings instead of simple hash-based n-grams:
 - **Cluster-aware search** &mdash; results in the same cluster as the query get a 10% similarity boost
 - **Adaptive decay** &mdash; large active clusters (>10 members) decay at 0.5x rate; isolated outliers decay at 2.0x rate
 - **Feature-gated** &mdash; semantic embeddings are on by default (`semantic` Cargo feature). Compile with `--no-default-features` for hash-only mode
+- **Lazy loading** &mdash; the ONNX model is loaded via `OnceCell` only when semantic embedding is actually needed, not on every hook invocation
+- **Prompt-length gate** &mdash; trivial prompts (&lt;4 words) skip all ML-heavy operations (routing, semantic search, pattern injection)
+- **Instant routing vectors** &mdash; when routing fires, the task pattern is embedded and stored immediately so similarity-based generalization works on the very next prompt
+- **Auto-backfill** &mdash; existing routing weights without vectors are automatically vectorized on the next prompt that loads learned weights
 
 The embedding model (~30 MB) is downloaded automatically on first use from Hugging Face. Pre-download with `flowforge learn download-model`.
 

@@ -8,6 +8,11 @@ pub fn run() -> Result<()> {
     let ctx = super::HookContext::init()?;
     let input = UserPromptSubmitInput::from_value(&ctx.raw)?;
 
+    // Fallback: if SessionStart didn't create a session record, create one now.
+    // This ensures session-dependent features (trust, metrics, trajectories) work
+    // even if the SessionStart hook failed or Claude Code didn't send a sessionId.
+    ensure_session(&ctx, &input.common);
+
     // Kill-switch fast-path: skip routing/patterns/embeddings but still
     // enforce work-tracking so tasks are never silently forgotten.
     if std::env::var("FLOWFORGE_HOOKS_DISABLED").is_ok() {
@@ -93,6 +98,7 @@ pub fn run() -> Result<()> {
                                 "session_continuity",
                                 Some(&prev.session_id),
                                 None,
+                                None,
                             );
                         }
                     }
@@ -119,11 +125,29 @@ pub fn run() -> Result<()> {
     // Route the task to suggested agents
     if ctx.config.hooks.routing {
         if let Ok(registry) = AgentRegistry::load(&ctx.config.agents) {
-            let router = AgentRouter::new(&ctx.config.routing);
+            // Check for adaptive weights — override config if enough data exists
+            let routing_config = if let Some(db) = db {
+                load_adaptive_routing_config(db, &ctx.config.routing)
+            } else {
+                ctx.config.routing.clone()
+            };
+            let router = AgentRouter::new(&routing_config);
             let agents: Vec<&_> = registry.list().into_iter().collect();
 
-            let results =
-                router.route(&prompt, &agents, &learned_weights, routing_context.as_ref());
+            // Compute semantic scores for all agents
+            let semantic_scores = if let Some(db) = db {
+                compute_semantic_scores(db, &prompt, &agents)
+            } else {
+                None
+            };
+
+            let results = router.route(
+                &prompt,
+                &agents,
+                &learned_weights,
+                routing_context.as_ref(),
+                semantic_scores.as_ref(),
+            );
 
             if let Some(top) = results.first() {
                 if top.confidence > 0.3 {
@@ -141,32 +165,56 @@ pub fn run() -> Result<()> {
                         .unwrap_or(false);
 
                     if !suppress {
-                        // Phase 3B: Show breakdown in suggestion
+                        // Phase 3B: Directive routing — tiered by confidence
+                        let conf = top.confidence;
                         let b = &top.breakdown;
                         let breakdown_line = format!(
-                            "Why: pattern={:.0}%, cap={:.0}%, learned={:.0}%, context={:.0}%",
+                            "Signals: pattern={:.0}%, cap={:.0}%, learned={:.0}%, context={:.0}%, semantic={:.0}%",
                             b.pattern_score * 100.0,
                             b.capability_score * 100.0,
                             b.learned_score * 100.0,
                             b.context_score * 100.0,
+                            b.semantic_score * 100.0,
                         );
 
-                        let mut routing_ctx = format!(
-                            "[FlowForge] Suggested agent: {} (confidence: {:.0}%)\n{}",
-                            top.agent_name,
-                            top.confidence * 100.0,
-                            breakdown_line,
-                        );
+                        let subagent_type = map_to_subagent_type(&top.agent_name);
+
+                        // Tiered directive: higher confidence = stronger instruction
+                        let directive = if conf >= 0.7 {
+                            format!(
+                                "[FlowForge Routing] DISPATCH to `{}` agent via Task tool (subagent_type: \"{}\").\n\
+                                 Confidence: {:.0}% — this agent is the best match for this task.\n\
+                                 {}",
+                                top.agent_name, subagent_type,
+                                conf * 100.0, breakdown_line,
+                            )
+                        } else if conf >= 0.5 {
+                            format!(
+                                "[FlowForge Routing] Use `{}` agent for this task (subagent_type: \"{}\").\n\
+                                 Confidence: {:.0}% — strong match. Delegate via Task tool unless the task is trivial.\n\
+                                 {}",
+                                top.agent_name, subagent_type,
+                                conf * 100.0, breakdown_line,
+                            )
+                        } else {
+                            format!(
+                                "[FlowForge Routing] Consider `{}` agent (subagent_type: \"{}\").\n\
+                                 Confidence: {:.0}% — moderate match. Use if the task would benefit from specialization.\n\
+                                 {}",
+                                top.agent_name, subagent_type,
+                                conf * 100.0, breakdown_line,
+                            )
+                        };
+
+                        let mut routing_ctx = directive;
 
                         // Include agent context for top match
                         if let Some(agent) = registry.get(&top.agent_name) {
                             if ctx.config.hooks.inject_agent_body {
-                                // Legacy: inject full markdown body
                                 if !agent.body.is_empty() {
                                     routing_ctx.push_str(&format!("\n\n{}", agent.body));
                                 }
                             } else {
-                                // Default: compact 1-line summary
                                 routing_ctx.push_str(&format!("\nRole: {}", agent.description));
                                 if !agent.capabilities.is_empty() {
                                     routing_ctx.push_str(&format!(
@@ -188,15 +236,17 @@ pub fn run() -> Result<()> {
 
                         context_parts.push(routing_ctx);
 
-                        // Record routing injection
+                        // Record routing injection with breakdown metadata
                         if let Some(db) = db {
                             if let Some(ref sid) = current_session_id {
+                                let metadata = serde_json::to_string(&top.breakdown).ok();
                                 let _ = db.record_context_injection(
                                     sid,
                                     current_trajectory_id.as_deref(),
                                     "routing",
                                     Some(&top.agent_name),
                                     Some(top.confidence),
+                                    metadata.as_deref(),
                                 );
                             }
                         }
@@ -234,6 +284,7 @@ pub fn run() -> Result<()> {
                             "work_item",
                             Some(&item.id),
                             None,
+                            None,
                         );
                     }
                 }
@@ -270,6 +321,7 @@ pub fn run() -> Result<()> {
                                 current_trajectory_id.as_deref(),
                                 "mailbox",
                                 Some(&msg.from_agent_name),
+                                None,
                                 None,
                             );
                         }
@@ -346,6 +398,7 @@ pub fn run() -> Result<()> {
                             "pattern",
                             Some(&m.id),
                             Some(m.similarity as f64),
+                            None,
                         );
                     }
                 }
@@ -369,6 +422,7 @@ pub fn run() -> Result<()> {
                                     current_trajectory_id.as_deref(),
                                     "kv",
                                     Some(key),
+                                    None,
                                     None,
                                 );
                             }
@@ -435,6 +489,7 @@ pub fn run() -> Result<()> {
                                     "file_dependency",
                                     None,
                                     None,
+                                    None,
                                 );
                             }
                         }
@@ -480,6 +535,7 @@ pub fn run() -> Result<()> {
                                 session_id,
                                 current_trajectory_id.as_deref(),
                                 "error_resolution",
+                                None,
                                 None,
                                 None,
                             );
@@ -571,6 +627,7 @@ pub fn run() -> Result<()> {
                                         "test_suggestion",
                                         None,
                                         None,
+                                        None,
                                     );
                                 }
                             }
@@ -588,6 +645,85 @@ pub fn run() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Fallback session creation: if SessionStart didn't persist a session record
+/// (e.g., sessionId wasn't in the payload), create one now so all session-dependent
+/// features (trust scoring, trajectory, metrics, statusline) work correctly.
+fn ensure_session(ctx: &super::HookContext, common: &flowforge_core::hook::CommonHookFields) {
+    let session_id = match ctx.session_id.as_deref().or(common.session_id.as_deref()) {
+        Some(id) if !id.is_empty() => id.to_string(),
+        _ => return, // No session ID available anywhere — can't create
+    };
+
+    let db = match ctx.db.as_ref() {
+        Some(db) => db,
+        None => return,
+    };
+
+    // Check if session already exists
+    if db.get_current_session().ok().flatten().is_some() {
+        return; // Session exists, nothing to do
+    }
+
+    // Also check if this specific session_id already exists (ended or otherwise)
+    if db.get_session_by_id(&session_id).ok().flatten().is_some() {
+        // Session exists but is ended — reopen it
+        let _ = db.reopen_session(&session_id);
+        return;
+    }
+
+    // Create the session record as fallback
+    let now = chrono::Utc::now();
+    let session = flowforge_core::SessionInfo {
+        id: session_id.clone(),
+        started_at: now,
+        ended_at: None,
+        cwd: common.cwd.clone().unwrap_or_else(|| ".".to_string()),
+        edits: 0,
+        commands: 0,
+        summary: None,
+        transcript_path: common.transcript_path.clone(),
+    };
+    let _ = db.create_session(&session);
+
+    // Create trajectory for this session
+    let trajectory = flowforge_core::trajectory::Trajectory {
+        id: uuid::Uuid::new_v4().to_string(),
+        session_id: session_id.clone(),
+        work_item_id: None,
+        agent_name: None,
+        task_description: None,
+        status: flowforge_core::trajectory::TrajectoryStatus::Recording,
+        started_at: now,
+        ended_at: None,
+        verdict: None,
+        confidence: None,
+        metadata: None,
+        embedding_id: None,
+    };
+    let _ = db.create_trajectory(&trajectory);
+
+    // Initialize trust score
+    let _ = db.create_trust_score(&session_id, ctx.config.guidance.trust_initial_score);
+}
+
+/// Map a FlowForge agent name to a Claude Code Task tool subagent_type.
+/// Agents that match a built-in subagent type get dispatched directly.
+/// All others use "general-purpose" with the agent's context injected.
+fn map_to_subagent_type(agent_name: &str) -> &'static str {
+    match agent_name {
+        // Research/exploration agents → Explore (read-only, fast)
+        "code-analyzer" | "code-quality" | "security-auditor" | "security-sentinel"
+        | "collective-intelligence" | "dependency-checker" => "Explore",
+
+        // Planning/architecture agents → Plan (read-only, designs)
+        "architect" | "architecture" | "code-goal-planner" | "system-design"
+        | "specification" | "refinement" => "Plan",
+
+        // Everything else → general-purpose (full tool access)
+        _ => "general-purpose",
+    }
 }
 
 /// Build routing context from current session state.
@@ -685,6 +821,119 @@ fn load_learned_weights_from_db(db: &MemoryDb, prompt: &str) -> HashMap<(String,
     }
 
     weights
+}
+
+/// Load adaptive routing config from DB if enough data exists.
+/// Falls back to the static config if not enough routing outcomes are recorded.
+fn load_adaptive_routing_config(
+    db: &MemoryDb,
+    base: &flowforge_core::config::RoutingConfig,
+) -> flowforge_core::config::RoutingConfig {
+    // Only use adaptive weights if we have >= 5 computed weights
+    let adaptive = match db.get_all_adaptive_weights() {
+        Ok(w) if w.len() >= 5 => w,
+        _ => return base.clone(),
+    };
+
+    flowforge_core::config::RoutingConfig {
+        pattern_weight: *adaptive.get("pattern").unwrap_or(&base.pattern_weight),
+        capability_weight: *adaptive.get("capability").unwrap_or(&base.capability_weight),
+        learned_weight: *adaptive.get("learned").unwrap_or(&base.learned_weight),
+        priority_weight: *adaptive.get("priority").unwrap_or(&base.priority_weight),
+        context_weight: *adaptive.get("context").unwrap_or(&base.context_weight),
+        semantic_weight: *adaptive.get("semantic").unwrap_or(&base.semantic_weight),
+        confidence_sharpening: base.confidence_sharpening,
+    }
+}
+
+/// Compute semantic (embedding) similarity scores for all agents against the task.
+fn compute_semantic_scores(
+    db: &MemoryDb,
+    prompt: &str,
+    agents: &[&flowforge_core::AgentDef],
+) -> Option<HashMap<String, f64>> {
+    let config_for_embed = flowforge_core::config::PatternsConfig::default();
+    let embedding = flowforge_memory::default_embedder(&config_for_embed);
+    let task_vec = embedding.embed(prompt);
+
+    let mut scores = HashMap::new();
+    for agent in agents {
+        // Build agent text from description + capabilities
+        let mut agent_text = agent.description.clone();
+        if !agent.capabilities.is_empty() {
+            agent_text.push(' ');
+            agent_text.push_str(&agent.capabilities.join(" "));
+        }
+        let agent_vec = embedding.embed(&agent_text);
+        let sim = flowforge_memory::cosine_similarity(&task_vec, &agent_vec);
+        // Normalize: cosine similarity can be negative with HashEmbedder, clamp to [0, 1]
+        scores.insert(agent.name.clone(), (sim as f64).clamp(0.0, 1.0));
+    }
+
+    // Tier 5A: Enhance with historical routing success/failure vectors
+    enhance_with_historical_matches(db, &task_vec, &mut scores);
+
+    Some(scores)
+}
+
+/// Tier 5A: Blend historical routing vectors into semantic scores.
+/// Successful past routings boost scores, failures penalize.
+fn enhance_with_historical_matches(
+    db: &MemoryDb,
+    task_vec: &[f32],
+    scores: &mut HashMap<String, f64>,
+) {
+    // Look up routing_success vectors for past successful routings
+    let success_vecs = db.get_vectors_for_source("routing_success").unwrap_or_default();
+    let failure_vecs = db.get_vectors_for_source("routing_failure").unwrap_or_default();
+
+    if success_vecs.is_empty() && failure_vecs.is_empty() {
+        return;
+    }
+
+    // Find top-3 most similar successful routings
+    let mut success_matches: Vec<(&str, f64)> = success_vecs
+        .iter()
+        .map(|(_, source_id, vec)| {
+            let sim = flowforge_memory::cosine_similarity(task_vec, vec) as f64;
+            (source_id.as_str(), sim)
+        })
+        .filter(|(_, sim)| *sim > 0.5)
+        .collect();
+    success_matches.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    success_matches.truncate(3);
+
+    // Boost agents from successful historical matches
+    for (source_id, sim) in &success_matches {
+        if let Some(agent_name) = source_id.split("::").nth(1) {
+            if let Some(score) = scores.get_mut(agent_name) {
+                // Blend: 60% description similarity + 40% historical
+                *score = 0.6 * *score + 0.4 * sim;
+            }
+        }
+    }
+
+    // Find top-3 most similar failure routings
+    let mut failure_matches: Vec<(&str, f64)> = failure_vecs
+        .iter()
+        .map(|(_, source_id, vec)| {
+            let sim = flowforge_memory::cosine_similarity(task_vec, vec) as f64;
+            (source_id.as_str(), sim)
+        })
+        .filter(|(_, sim)| *sim > 0.5)
+        .collect();
+    failure_matches.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    failure_matches.truncate(3);
+
+    // Penalize agents from failed historical matches
+    for (source_id, sim) in &failure_matches {
+        if let Some(agent_name) = source_id.split("::").nth(1) {
+            if let Some(score) = scores.get_mut(agent_name) {
+                // Reduce score proportional to similarity
+                *score *= 1.0 - 0.3 * sim;
+            }
+        }
+    }
 }
 
 /// Lightweight fast-path: only check for active work items.

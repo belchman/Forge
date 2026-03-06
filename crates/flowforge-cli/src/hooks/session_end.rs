@@ -38,6 +38,19 @@ pub fn run() -> Result<()> {
         }
     }
 
+    // Auto-release stale/abandoned work items so they don't stay in_progress forever
+    if ctx.config.work_tracking.work_stealing.enabled {
+        ctx.with_db("detect_stale", |db| {
+            let (marked, released) = flowforge_core::work_tracking::detect_stale(
+                db, &ctx.config.work_tracking,
+            )?;
+            if marked > 0 || released > 0 {
+                tracing::info!(marked, released, "session_end: cleaned up stale work items");
+            }
+            Ok(())
+        });
+    }
+
     // Push FlowForge-only items to external backend (C4)
     ctx.with_db("push_to_backend", |db| {
         flowforge_core::work_tracking::push_to_backend(db, &ctx.config.work_tracking)

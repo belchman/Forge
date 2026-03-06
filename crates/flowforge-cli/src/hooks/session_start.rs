@@ -58,6 +58,19 @@ pub fn run() -> Result<()> {
             // Initialize trust score
             db.create_trust_score(session_id, ctx.config.guidance.trust_initial_score)?;
 
+            // Auto-release stale/abandoned work items from previous sessions
+            if ctx.config.work_tracking.work_stealing.enabled {
+                let (marked, released) = flowforge_core::work_tracking::detect_stale(
+                    db, &ctx.config.work_tracking,
+                ).unwrap_or((0, 0));
+                if marked > 0 || released > 0 {
+                    eprintln!(
+                        "[FlowForge] Cleaned up stale work items: {} marked stealable, {} released",
+                        marked, released
+                    );
+                }
+            }
+
             // Sync work items from external backend and write to Claude Tasks
             let _ = flowforge_core::work_tracking::sync_from_backend(db, &ctx.config.work_tracking);
             let _ = flowforge_core::work_tracking::sync_all_to_claude_tasks(

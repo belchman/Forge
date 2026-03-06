@@ -197,10 +197,7 @@ pub fn run() -> Result<()> {
             let cps = db.list_checkpoints(sid).map(|c| c.len()).unwrap_or(0);
             parts.push(format!("{} cp", cps).dimmed().to_string());
 
-            // Separator
-            parts.push(SEP.dimmed().to_string());
-
-            // Session activity
+            // Session activity (with separator only when there's content)
             let mut activity = Vec::new();
             if session.edits > 0 {
                 activity.push(format!("{} edits", session.edits));
@@ -209,6 +206,7 @@ pub fn run() -> Result<()> {
                 activity.push(format!("{} cmds", session.commands));
             }
             if !activity.is_empty() {
+                parts.push(SEP.dimmed().to_string());
                 parts.push(activity.join(" ").dimmed().to_string());
             }
         }
@@ -441,17 +439,19 @@ fn get_agent_summary(
 
 /// Shorten agent type names for compact display
 fn shorten_model(model: &str) -> String {
-    match model {
-        m if m.contains("opus-4-6") || m.contains("opus-4.6") => "op4.6".to_string(),
-        m if m.contains("sonnet-4-6") || m.contains("sonnet-4.6") => "sn4.6".to_string(),
-        m if m.contains("haiku-4-5") || m.contains("haiku-4.5") => "hk4.5".to_string(),
-        m if m.contains("opus-4-5") || m.contains("opus-4.5") => "op4.5".to_string(),
-        m if m.contains("sonnet-4-5") || m.contains("sonnet-4.5") => "sn4.5".to_string(),
-        m if m.contains("opus-4-0") || m.contains("opus-4") => "op4".to_string(),
-        m if m.contains("sonnet-4-0") || m.contains("sonnet-4") => "sn4".to_string(),
-        m if m.contains("sonnet-3-5") || m.contains("sonnet-3.5") => "sn3.5".to_string(),
-        m if m.contains("haiku-3-5") || m.contains("haiku-3.5") => "hk3.5".to_string(),
-        m => m.to_string(),
+    // Normalize: lowercase, replace spaces with hyphens for uniform matching
+    let m = model.to_lowercase().replace(' ', "-");
+    match m.as_str() {
+        s if s.contains("opus-4.6") || s.contains("opus-4-6") => "op4.6".to_string(),
+        s if s.contains("sonnet-4.6") || s.contains("sonnet-4-6") => "sn4.6".to_string(),
+        s if s.contains("haiku-4.5") || s.contains("haiku-4-5") => "hk4.5".to_string(),
+        s if s.contains("opus-4.5") || s.contains("opus-4-5") => "op4.5".to_string(),
+        s if s.contains("sonnet-4.5") || s.contains("sonnet-4-5") => "sn4.5".to_string(),
+        s if s.contains("opus-4") => "op4".to_string(),
+        s if s.contains("sonnet-4") => "sn4".to_string(),
+        s if s.contains("sonnet-3.5") || s.contains("sonnet-3-5") => "sn3.5".to_string(),
+        s if s.contains("haiku-3.5") || s.contains("haiku-3-5") => "hk3.5".to_string(),
+        _ => model.to_string(),
     }
 }
 
